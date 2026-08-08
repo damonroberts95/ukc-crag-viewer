@@ -1,0 +1,53 @@
+# --- Android / Gradle build output ---
+build/
+.gradle/
+captures/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Machine-specific SDK paths.
+local.properties
+
+# --- Signing material ---
+# A keystore in the history cannot be un-published. Releases are signed in CI
+# from secrets instead; see README.
+*.jks
+*.keystore
+
+# --- IDE ---
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+
+# --- macOS ---
+.DS_Store
+
+# --- Python tooling for the scraper scripts ---
+.venv/
+__pycache__/
+*.pyc
+
+# --- Scraped UKClimbing content ---
+# UKC's data, gathered for personal use. Republishing it is not ours to do.
+*.xlsx
+*.json
+greator_app.html
+!android/app/src/main/assets/**/*.json
+
+# --- Scratch work that predates the app ---
+# One-off scripts and notes from working the site out. The app does not use
+# them and a public repo is not the place for them.
+harvest.js
+import_harvest.py
+ukc_to_excel.py
+.python-version
+NOTES.md
+android/NOTES.md
+
+# Logged-in browser profile used while scraping — holds session cookies.
+.ukc-browser-profile/

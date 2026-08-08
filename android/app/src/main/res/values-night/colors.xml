@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The toolbar keeps the brand navy in both modes, so its text stays white. -->
+    <color name="brand">#17365D</color>
+    <!-- On a dark surface the amber has to go lighter to stay legible. -->
+    <color name="stars">#FFC24B</color>
+    <color name="on_brand">#FFFFFF</color>
+    <!-- The tick green has to lift off a dark surface too. -->
+    <color name="ticked">#7BD88F</color>
+    <!-- The same marker, lifted for a dark surface. -->
+    <color name="attempt">#F2B8B5</color>
+    <color name="scrim">#99000000</color>
+    <!-- The same hues, lifted so they read against a dark map. -->
+    <color name="type_boulder">#64B5F6</color>
+    <color name="type_trad">#81C784</color>
+    <color name="type_sport">#EF9A9A</color>
+    <color name="type_winter">#CE93D8</color>
+    <color name="type_other">#B0BEC5</color>
+    <color name="pin_buttress">#FFB74D</color>
+    <!-- Orange over a dark casing: the one hue OSM never uses for terrain. -->
+    <color name="walk_line">#FF9100</color>
+    <color name="walk_casing">#000000</color>
+    <color name="here_dot">#64B5F6</color>
+</resources>

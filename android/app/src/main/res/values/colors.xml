@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand">#17365D</color>
+    <!-- Amber dark enough to read on a light surface. -->
+    <color name="stars">#8A6100</color>
+    <color name="on_brand">#FFFFFF</color>
+    <!-- Green for a logbook tick, dark enough to read on a light surface. -->
+    <color name="ticked">#2E7D32</color>
+    <!-- Attempted but not topped: readable on a light surface. -->
+    <color name="attempt">#B3261E</color>
+    <color name="scrim">#99000000</color>
+    <!-- Pin colours by climbing type. Distinct in hue, not just lightness. -->
+    <color name="type_boulder">#1565C0</color>
+    <color name="type_trad">#2E7D32</color>
+    <color name="type_sport">#C62828</color>
+    <color name="type_winter">#6A1B9A</color>
+    <color name="type_other">#546E7A</color>
+    <color name="pin_buttress">#EF6C00</color>
+    <!-- Orange over a dark casing: the one hue OSM never uses for terrain. -->
+    <color name="walk_line">#FF6D00</color>
+    <color name="walk_casing">#1A1A1A</color>
+    <color name="here_dot">#1565C0</color>
+</resources>

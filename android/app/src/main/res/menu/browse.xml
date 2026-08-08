@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item
+        android:id="@+id/sign_in"
+        android:title="@string/sign_in"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/sync_ticks"
+        android:title="@string/sync_ticks"
+        app:showAsAction="never" />
+
+</menu>

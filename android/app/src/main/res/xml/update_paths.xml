@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Only the one cache subdirectory the updater downloads into is shared. Topo
+    photos and the crag library live elsewhere under files/ and stay private.
+-->
+<paths>
+    <cache-path
+        name="updates"
+        path="updates/" />
+</paths>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Fallback for phones without dynamic colour. The brand navy is a
+      background colour: Material draws colorPrimary as text on dark surfaces,
+      where navy on charcoal cannot be read, so night mode gets a light tint.
+    -->
+    <style name="Theme.UkcCrags" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#A8C7F0</item>
+        <item name="colorOnPrimary">#0C1D33</item>
+        <item name="colorSecondary">#A8C7F0</item>
+        <item name="colorOnSecondary">#0C1D33</item>
+    </style>
+</resources>

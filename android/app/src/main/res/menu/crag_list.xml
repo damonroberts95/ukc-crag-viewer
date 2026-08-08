@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <!--
+      Eleven flat entries was a wall of text. The three things done constantly
+      stay on top; the rest sit under the job they belong to.
+    -->
+    <item
+        android:id="@+id/map"
+        android:title="@string/map"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/find"
+        android:title="@string/search_climbs"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/nearest"
+        android:title="@string/nearest_first"
+        android:checkable="true"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/logbook_group"
+        android:title="@string/menu_logbook"
+        app:showAsAction="never">
+
+        <menu>
+            <item
+                android:id="@+id/sign_in"
+                android:title="@string/sign_in"
+                app:showAsAction="never" />
+            <item
+                android:id="@+id/sync_ticks"
+                android:title="@string/sync_ticks"
+                app:showAsAction="never" />
+            <item
+                android:id="@+id/lists"
+                android:title="@string/ticklists"
+                app:showAsAction="never" />
+        </menu>
+
+    </item>
+
+    <item
+        android:id="@+id/crags_group"
+        android:title="@string/menu_crags"
+        app:showAsAction="never">
+
+        <menu>
+            <item
+                android:id="@+id/add"
+                android:title="@string/add_crags"
+                app:showAsAction="never" />
+            <item
+                android:id="@+id/refresh"
+                android:title="@string/refresh_crags"
+                app:showAsAction="never" />
+            <item
+                android:id="@+id/browse"
+                android:title="@string/browse_crags"
+                app:showAsAction="never" />
+            <item
+                android:id="@+id/clear"
+                android:title="@string/clear_crags"
+                app:showAsAction="never" />
+        </menu>
+
+    </item>
+
+    <item
+        android:id="@+id/updates"
+        android:title="@string/check_updates"
+        app:showAsAction="never" />
+
+</menu>

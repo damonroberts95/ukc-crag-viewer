@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <!-- The coordinate mapping is settled now, so this is a last resort. -->
+    <item
+        android:id="@+id/rotate"
+        android:title="@string/rotate_lines_long"
+        app:showAsAction="never" />
+
+</menu>
