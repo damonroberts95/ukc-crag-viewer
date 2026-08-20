@@ -6,15 +6,19 @@
       Eleven flat entries was a wall of text. The three things done constantly
       stay on top; the rest sit under the job they belong to.
     -->
+    <!-- The map and the location fix are reached constantly, so they sit on the
+         bar itself rather than two taps down. -->
     <item
         android:id="@+id/map"
         android:title="@string/map"
-        app:showAsAction="never" />
+        android:icon="@drawable/ic_map"
+        app:showAsAction="always" />
 
     <item
-        android:id="@+id/find"
-        android:title="@string/search_climbs"
-        app:showAsAction="never" />
+        android:id="@+id/refresh_location"
+        android:title="@string/refresh_location"
+        android:icon="@drawable/ic_my_location"
+        app:showAsAction="always" />
 
     <item
         android:id="@+id/nearest"

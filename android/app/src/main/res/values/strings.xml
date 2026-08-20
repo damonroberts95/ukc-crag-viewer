@@ -9,13 +9,17 @@
     <string name="no_browser">No browser installed</string>
     <string name="search_hint">Filter climbs, grades, buttresses</string>
     <string name="starred">★</string>
-    <string name="no_matches">No climbs match.</string>
+    <string name="no_matches">Nothing matches.</string>
     <string name="no_crags">No crags yet.\n\nImport them from UKClimbing with the button below, then sync your logbook to bring your ticks across.</string>
     <string name="view_on_ukc">View crag on UKClimbing</string>
     <string name="crag_detail">%1$d climbs · %2$d buttresses · %3$d located</string>
     <string name="crag_progress">%1$d / %2$d climbs ticked</string>
     <string name="crag_progress_long">%1$d of %2$d climbs ticked · %3$d buttresses</string>
     <string name="route_meta">%1$s · %2$s</string>
+    <plurals name="crags_found">
+        <item quantity="one">%d crag</item>
+        <item quantity="other">%d crags</item>
+    </plurals>
     <plurals name="climbs">
         <item quantity="one">%d climb</item>
         <item quantity="other">%d climbs</item>
@@ -68,9 +72,11 @@
         <item quantity="one">%d climb drawn — tap a line</item>
         <item quantity="other">%d climbs drawn — tap a line</item>
     </plurals>
-    <string name="filter_crags">Filter crags</string>
-    <string name="search_climbs">Find a climb</string>
+    <string name="search_everything">Search crags and climbs</string>
     <string name="map">Map</string>
+    <string name="refresh_location">Refresh my location</string>
+    <string name="location_fresh">Location updated</string>
+    <string name="locating">Finding your location…</string>
     <string name="menu_logbook">My logbook…</string>
     <string name="menu_logbook_in">My logbook ✓…</string>
     <string name="menu_logbook_out">My logbook (signed out)…</string>
@@ -88,10 +94,16 @@
     <string name="pin_approximate">position approximate</string>
     <string name="buttresses_legend">Buttress</string>
     <string name="type_unknown">Unlisted</string>
-    <string name="cache_area">Save map for offline</string>
-    <string name="cache_ask">Store about %1$d tiles for what is on screen, zoom %2$d to %3$d?</string>
-    <string name="cache_too_big">Saving this view down to zoom 16 needs about %1$d tiles. Zoom in until it is under %2$d — bulk downloads are not allowed by OpenStreetMap.</string>
     <string name="zoom_in">Zoom in</string>
+    <string name="face_north">North</string>
+    <string name="map_online">Map (OpenStreetMap)</string>
+    <string name="map_esri">Satellite — Esri (sharpest)</string>
+    <string name="map_sentinel">Satellite — Sentinel-2 (10m)</string>
+    <string name="map_cache_size">Cached tiles…</string>
+    <string name="credit_osm">© OpenStreetMap contributors</string>
+    <string name="credit_esri">Imagery © Esri, Maxar, Earthstar Geographics</string>
+    <string name="credit_sentinel">Sentinel-2 cloudless — s2maps.eu by EOX (modified Copernicus Sentinel data)</string>
+    <string name="map_cached">%1$d MB of online tiles cached — kept for a year, so anywhere you have looked at will still draw with no signal.</string>
     <string name="walk_here">Walk here</string>
     <string name="walk_working">Looking for paths…</string>
     <string name="walk_on_paths">%1$s to %2$s along paths</string>
@@ -109,7 +121,7 @@
         <item quantity="one">%d buttress has no published position, shown on the crag pin</item>
         <item quantity="other">%d buttresses have no published position, shown on the crag pin</item>
     </plurals>
-    <string name="search_climbs_hint">Search every crag by climb name or grade</string>
+    <string name="filter_list">Filter this list</string>
     <string name="ticklists">Ticklists</string>
     <string name="import_list_crags">Import this list’s crags</string>
     <string name="list_import_ask">%1$d crags in this list are not in your library yet. Import them?</string>
@@ -132,8 +144,9 @@
     <string name="grades_chosen">%1$d grades</string>
     <string name="miles_away">%.1f miles away</string>
     <string name="starting">Starting…</string>
-    <string name="run_in_background">Hide</string>
+    <string name="run_in_background">Back to crags</string>
     <string name="importing_crags">Importing crags</string>
+    <string name="channel_import">Import progress</string>
     <string name="importing_named">%1$d of %2$d · %3$s</string>
     <string name="clear_crags">Clear all crags</string>
     <string name="clear_crags_warning">Deletes all %1$d saved crags and their topo photos. Your ticks are kept.</string>
@@ -149,6 +162,10 @@
     <string name="login_url">https://www.ukclimbing.com/user/</string>
     <string name="ticks_syncing">Reading your logbook… %1$d found</string>
     <string name="ticks_done">Logbook synced: %1$d climbs ticked (%2$d new)</string>
+    <plurals name="ticks_auto">
+        <item quantity="one">Weekly logbook sync: %d new tick</item>
+        <item quantity="other">Weekly logbook sync: %d new ticks</item>
+    </plurals>
     <string name="ticks_signed_out">Sign in to UKC first, then try again.</string>
     <string name="ticks_failed">Could not read your logbook.</string>
     <string name="import_all_ok">Saved to your crag list.</string>

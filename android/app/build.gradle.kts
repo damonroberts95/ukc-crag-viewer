@@ -38,6 +38,15 @@ android {
                 keyAlias = System.getenv("KEY_ALIAS")
                 keyPassword = System.getenv("KEY_PASSWORD")
             }
+
+            // v2 alone was all the 1.0 APK carried. v3 is what lets this key be
+            // rotated later without every install breaking, and v4 is what the
+            // installer wants for a fast incremental update. v1 is JAR signing,
+            // superseded well before this app's minimum of API 26.
+            enableV1Signing = false
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = true
         }
     }
 

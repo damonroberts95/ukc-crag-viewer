@@ -274,8 +274,11 @@
     return new Promise((resolve) => {
       const frame = document.createElement('iframe');
       frame.setAttribute('sandbox', 'allow-same-origin');
+      // One pixel, off screen. The payload is in the markup, so nothing here
+      // needs laying out or painting — and at 800x600 the browser was doing
+      // both, six pages at a time, for nobody's benefit.
       frame.style.cssText =
-        'position:absolute;left:-10000px;top:0;width:800px;height:600px;border:0;';
+        'position:absolute;left:-10000px;top:0;width:1px;height:1px;border:0;';
 
       let settled = false;
 

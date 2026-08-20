@@ -18,7 +18,7 @@
         android:layout_marginHorizontal="12dp"
         android:layout_marginTop="8dp"
         app:startIconDrawable="@android:drawable/ic_menu_search"
-        android:hint="@string/filter_crags">
+        android:hint="@string/search_everything">
 
         <com.google.android.material.textfield.TextInputEditText
             android:id="@+id/filter"

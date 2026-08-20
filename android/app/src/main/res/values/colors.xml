@@ -20,4 +20,7 @@
     <color name="walk_line">#FF6D00</color>
     <color name="walk_casing">#1A1A1A</color>
     <color name="here_dot">#1565C0</color>
+    <!-- Ground under the map where no tile is cached: quiet, not a grey grid. -->
+    <color name="map_empty">#20241D</color>
+    <color name="map_empty_line">#2C3127</color>
 </resources>

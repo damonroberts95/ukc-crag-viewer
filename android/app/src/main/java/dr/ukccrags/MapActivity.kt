@@ -15,7 +15,6 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dr.ukccrags.databinding.ActivityMapBinding
 import dr.ukccrags.databinding.ItemLegendBinding
 import dr.ukccrags.databinding.SheetPinBinding
-import org.osmdroid.tileprovider.cachemanager.CacheManager
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
@@ -56,6 +55,16 @@ class MapActivity : AppCompatActivity() {
     /** The opening view is framed once; later rebuilds must not move the map. */
     private var framed = false
 
+    /** Where the pins were last built for, so a small pan can be ignored. */
+    private var builtFor: org.osmdroid.util.BoundingBox? = null
+
+    /** What each crag mostly holds, and the pin colour that follows from it. */
+    private var pinTypes: Map<String, String> = emptyMap()
+    private var pinColours: Map<String, Int> = emptyMap()
+
+    private val settle = android.os.Handler(android.os.Looper.getMainLooper())
+    private val rebuildWhenStill = Runnable { rebuildNow() }
+
     private val askLocation = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
@@ -79,6 +88,13 @@ class MapActivity : AppCompatActivity() {
         binding.toolbar.setNavigationOnClickListener { finish() }
 
         crags = CragStore.load(this).filter { it.hasPin }
+
+        // Working out what a crag mostly holds walks all of its climbs. A zoom
+        // used to do that for every crag in the library, twice — once for the
+        // pins and once for the legend — which is what made a pinch stutter.
+        // None of it can change while this screen is open.
+        pinTypes = crags.associate { it.area to it.dominantType() }
+        pinColours = pinTypes.mapValues { (_, type) -> pinColour(type) }
         single = intent.getStringExtra(EXTRA_AREA)?.let { area ->
             CragStore.load(this).firstOrNull { it.area == area }
         }
@@ -86,6 +102,20 @@ class MapActivity : AppCompatActivity() {
         supportActionBar?.title = single?.area ?: getString(R.string.map)
 
         binding.map.setTileSource(TileSourceFactory.MAPNIK)
+        applySource(MapSources.chosen(this))
+
+        // Out of signal and past what is cached, osmdroid draws a grey grid of
+        // "no tile" squares. The pins, the walking line and the location dot
+        // are the parts that actually navigate, so let them sit on a plain
+        // ground instead of a chessboard.
+        binding.map.overlayManager.tilesOverlay.apply {
+            loadingBackgroundColor = ContextCompat.getColor(
+                this@MapActivity, R.color.map_empty,
+            )
+            loadingLineColor = ContextCompat.getColor(
+                this@MapActivity, R.color.map_empty_line,
+            )
+        }
         binding.map.setMultiTouchControls(true)
         binding.map.zoomController.setVisibility(
             org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER
@@ -98,9 +128,22 @@ class MapActivity : AppCompatActivity() {
 
         binding.map.overlays.add(overlay)
 
+        // Two fingers turn the map. Stood under a crag, matching the map to
+        // what you are looking at beats knowing where north is. Zoom takes
+        // precedence: see RotateGesture.
+        binding.map.overlays.add(RotateGesture(binding.map))
+
+        // A turned map needs a way back, and a permanent button for it would be
+        // clutter, so the chip appears only once the map is off north.
+        binding.map.overlays.add(NorthWatcher())
+
+        binding.north.setOnClickListener {
+            binding.map.mapOrientation = 0f
+            binding.map.invalidate()
+        }
+
         startLocating()
         binding.here.setOnClickListener { goToMe() }
-        binding.offline.setOnClickListener { confirmCache() }
         binding.clearWalk.setOnClickListener { clearWalk() }
 
         // Zooming in far enough swaps crags for their buttresses, so the map
@@ -178,15 +221,65 @@ class MapActivity : AppCompatActivity() {
      * Redraws when the view changes. Buttress pins are built only for the crags
      * on screen: every buttress in the library at once would be thousands of
      * pins, nearly all of them off screen.
+     *
+     * A scroll fires this continuously, and rebuilding the pin list under a
+     * moving finger is what made panning stutter. While detailed, it rebuilds
+     * only once the view has moved far enough to have brought a new crag in.
      */
     private fun rebuild() {
+        // A pinch fires a zoom event per frame, and rebuilding the pin list on
+        // each one is the jitter. Doing it once the fingers stop is invisible.
+        settle.removeCallbacks(rebuildWhenStill)
+        settle.postDelayed(rebuildWhenStill, SETTLE_MS)
+    }
+
+    private fun rebuildNow() {
         val wanted = single == null && binding.map.zoomLevelDouble >= BUTTRESS_ZOOM
 
         if (wanted == detailed && !wanted) return
+        if (wanted && detailed && !movedFar()) return
 
+        val swapped = wanted != detailed
         detailed = wanted
+
         buildPins()
-        buildLegend()
+
+        // The legend only says which kinds of pin are on screen, so it changes
+        // when the mode does, not on every pan.
+        if (swapped) buildLegend()
+    }
+
+    /**
+     * Watches the map's own orientation. Rotation is a gesture on the map, not
+     * an event the map reports, so this rides along with the drawing instead.
+     */
+    private inner class NorthWatcher : org.osmdroid.views.overlay.Overlay() {
+
+        private var wasTurned = false
+
+        override fun draw(canvas: android.graphics.Canvas, map: org.osmdroid.views.MapView, shadow: Boolean) {
+            if (shadow) return
+
+            val turned = map.mapOrientation != 0f
+            if (turned == wasTurned) return
+
+            wasTurned = turned
+            binding.north.visibility = if (turned) View.VISIBLE else View.GONE
+        }
+    }
+
+    /** True once the view has shifted by a third of its own width or height. */
+    private fun movedFar(): Boolean {
+        val box = binding.map.boundingBox
+        val last = builtFor ?: return true
+
+        val latitudeSpan = box.latNorth - box.latSouth
+        val longitudeSpan = box.lonEast - box.lonWest
+
+        return kotlin.math.abs(box.centerLatitude - last.centerLatitude) >
+            latitudeSpan / 3 ||
+            kotlin.math.abs(box.centerLongitude - last.centerLongitude) >
+            longitudeSpan / 3
     }
 
     /** The reader's own position, when the permission is already granted. */
@@ -279,6 +372,7 @@ class MapActivity : AppCompatActivity() {
     private fun prefs() = getSharedPreferences("location", MODE_PRIVATE)
 
     private fun buildPins() {
+        builtFor = binding.map.boundingBox
         val crag = single
 
         val pins = when {
@@ -289,7 +383,7 @@ class MapActivity : AppCompatActivity() {
                     label = it.area,
                     latitude = it.latitude!!,
                     longitude = it.longitude!!,
-                    colour = colourFor(dominantType(it)),
+                    colour = pinColours[it.area] ?: pinColour(""),
                     crag = it.area,
                     payload = it,
                 )
@@ -392,27 +486,6 @@ class MapActivity : AppCompatActivity() {
         }
     }
 
-    private fun dominantType(crag: Crag): String = crag.buttresses
-        .flatMap { it.climbs }
-        .map { it.type }
-        .filter { it.isNotBlank() }
-        .groupingBy { it }
-        .eachCount()
-        .maxByOrNull { it.value }
-        ?.key
-        .orEmpty()
-
-    private fun colourFor(type: String): Int = ContextCompat.getColor(
-        this,
-        when {
-            type.startsWith("Boulder", true) -> R.color.type_boulder
-            type.equals("Trad", true) -> R.color.type_trad
-            type.equals("Sport", true) -> R.color.type_sport
-            type.equals("Winter", true) || type.equals("Ice", true) ||
-                type.equals("Mixed", true) -> R.color.type_winter
-            else -> R.color.type_other
-        },
-    )
 
     /**
      * Only the types actually present, since a fixed key would list Winter to
@@ -426,8 +499,9 @@ class MapActivity : AppCompatActivity() {
             return
         }
 
-        val present = crags.map { dominantType(it) }
-            .map { it to colourFor(it) }
+        val present = crags.mapNotNull { pinTypes[it.area] }
+            .distinct()
+            .map { it to pinColour(it) }
             .distinctBy { it.second }
 
         for ((type, colour) in present.sortedBy { it.first }) {
@@ -660,44 +734,69 @@ class MapActivity : AppCompatActivity() {
     }
 
     /**
-     * Tiles are normally kept only for what has been looked at, which is fine
-     * with signal and useless without. This stores the tiles for the view on
-     * screen so a crag can be found in a valley with no reception.
-     *
-     * Deliberately bounded: OpenStreetMap's tile policy rules out bulk
-     * downloading, and a whole county at street zoom runs to hundreds of
-     * thousands of tiles.
+     * Draws the map from whichever source was last chosen. Everything on offer
+     * is online: what makes the map work at a crag is the cache, not a download
+     * button, since OpenStreetMap's terms forbid pulling their tiles down ahead
+     * of time and no aerial provider gives an offline basemap away.
      */
-    private fun confirmCache() {
-        val box = binding.map.boundingBox
-        val zoom = binding.map.zoomLevelDouble.toInt()
+    private fun applySource(id: String) {
+        MapSources.choose(this, id)
 
-        // Always down to 16, whatever the current zoom: below that the paths and
-        // field boundaries you actually navigate by are not drawn yet, so a
-        // shallower cache would be no use at the crag. A wide view will exceed
-        // the tile limit and be refused, which is the right answer.
-        val deepest = maxOf(zoom, DEEPEST_ZOOM)
+        val tiles = MapSources.tileSource(id)
 
-        val manager = CacheManager(binding.map)
-        val count = manager.possibleTilesInArea(box, zoom, deepest)
+        binding.map.tileProvider?.detach()
+        binding.map.setTileProvider(org.osmdroid.tileprovider.MapTileProviderBasic(this))
+        binding.map.setTileSource(tiles)
 
-        if (count > TILE_LIMIT) {
-            MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.cache_area)
-                .setMessage(getString(R.string.cache_too_big, count, TILE_LIMIT))
-                .setPositiveButton(android.R.string.ok, null)
-                .show()
-            return
+        // Every source runs out of data somewhere — 14 for Sentinel-2, 20 for
+        // Esri — and past that osmdroid enlarges the deepest tile it has. Soft
+        // pixels beat a wall you cannot zoom through when you are trying to see
+        // which side of a wall a boulder sits on, so the map goes further in
+        // than any of them can actually draw.
+        binding.map.maxZoomLevel = MAP_MAX_ZOOM
+
+        // All of these require crediting, and the credit belongs on the map.
+        binding.credit.text = MapSources.attribution(this, id)
+        binding.map.invalidate()
+
+        invalidateOptionsMenu()
+    }
+
+    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
+        // Built by hand rather than from XML: which sources exist depends on
+        // whether the reader has dropped an API key in beside their maps.
+        val chosen = MapSources.chosen(this)
+
+        for ((order, id) in MapSources.available().withIndex()) {
+            menu.add(MENU_SOURCES, order, order, MapSources.label(this, id)).apply {
+                isCheckable = true
+                isChecked = id == chosen
+            }
         }
 
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.cache_area)
-            .setMessage(getString(R.string.cache_ask, count, zoom, deepest))
-            .setPositiveButton(R.string.cache_area) { _, _ ->
-                manager.downloadAreaAsync(this, box, zoom, deepest)
-            }
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
+        menu.setGroupCheckable(MENU_SOURCES, true, true)
+        menu.add(0, MENU_CACHE, 100, R.string.map_cache_size)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+        val sources = MapSources.available()
+
+        if (item.groupId == MENU_SOURCES && item.itemId in sources.indices) {
+            applySource(sources[item.itemId])
+            return true
+        }
+
+        if (item.itemId == MENU_CACHE) {
+            Toast.makeText(
+                this,
+                getString(R.string.map_cached, MapSources.cachedMegabytes(this)),
+                Toast.LENGTH_LONG,
+            ).show()
+            return true
+        }
+
+        return super.onOptionsItemSelected(item)
     }
 
     override fun onResume() {
@@ -706,6 +805,7 @@ class MapActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        settle.removeCallbacks(rebuildWhenStill)
         binding.map.onPause()
         super.onPause()
     }
@@ -714,14 +814,17 @@ class MapActivity : AppCompatActivity() {
         /** Set to a crag's name to map that crag's buttresses instead. */
         const val EXTRA_AREA = "area"
 
-        /** Beyond this, a download stops being a courtesy to OSM. */
-        private const val TILE_LIMIT = 6000
-
-        /** Detail worth having offline: paths and walls appear by 16. */
-        private const val DEEPEST_ZOOM = 16
-
         /** Zoom at which buttresses are far enough apart to be worth drawing. */
         private const val BUTTRESS_ZOOM = 15.0
+
+        /** As far in as the map will go, whatever the source can supply. */
+        private const val MAP_MAX_ZOOM = 21.0
+
+        private const val MENU_SOURCES = 1
+        private const val MENU_CACHE = 900
+
+        /** How long the map has to sit still before the pins are rebuilt. */
+        private const val SETTLE_MS = 140L
 
         /** Precision is asked for once, then left alone. */
         private const val KEY_ASKED_PRECISE = "asked_precise"

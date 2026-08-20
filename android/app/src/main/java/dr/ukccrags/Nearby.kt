@@ -4,7 +4,10 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.ContextCompat
 
 /**
@@ -34,6 +37,51 @@ object Nearby {
     fun precise(context: Context): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Asks the providers for a new fix rather than repeating whatever another
+     * app last asked for. [onFix] runs on the main thread with the first fix to
+     * arrive, or with the last known one if nothing lands inside [timeoutMs].
+     */
+    fun refresh(context: Context, timeoutMs: Long = 15_000L, onFix: (Location?) -> Unit) {
+        val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+
+        // The passive provider only repeats other apps' fixes, which is what
+        // this is trying to get away from.
+        val providers = manager?.getProviders(true)
+            ?.filter { it != LocationManager.PASSIVE_PROVIDER }
+            .orEmpty()
+
+        if (manager == null || !granted(context) || providers.isEmpty()) {
+            onFix(lastKnown(context))
+            return
+        }
+
+        val handler = Handler(Looper.getMainLooper())
+        var settled = false
+        lateinit var listener: LocationListener
+
+        // Whichever provider answers first wins; the rest are dropped so the
+        // app is not left holding a GPS lock behind the reader's back.
+        fun settle(fix: Location?) {
+            if (settled) return
+            settled = true
+
+            handler.removeCallbacksAndMessages(null)
+            runCatching { manager.removeUpdates(listener) }
+            onFix(fix ?: lastKnown(context))
+        }
+
+        listener = LocationListener { fix -> settle(fix) }
+
+        for (provider in providers) {
+            runCatching {
+                manager.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+            }
+        }
+
+        handler.postDelayed({ settle(null) }, timeoutMs)
+    }
 
     /** Best recent fix across providers, or null if none is available yet. */
     fun lastKnown(context: Context): Location? {

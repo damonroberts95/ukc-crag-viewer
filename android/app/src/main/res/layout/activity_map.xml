@@ -21,6 +21,31 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
+        <!-- Only visible once the map has been turned off north. -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/north"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_margin="12dp"
+            android:textSize="12sp"
+            android:visibility="gone"
+            android:text="@string/face_north" />
+
+        <!-- Imagery and map data both have to be credited where they are shown. -->
+        <TextView
+            android:id="@+id/credit"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:layout_margin="6dp"
+            android:paddingHorizontal="6dp"
+            android:paddingVertical="2dp"
+            android:background="@color/scrim"
+            android:textColor="#F2F2EF"
+            android:textSize="10sp" />
+
         <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:id="@+id/here"
             android:layout_width="wrap_content"
@@ -51,18 +76,6 @@
         android:orientation="horizontal"
         android:paddingHorizontal="12dp"
         android:paddingTop="8dp">
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/offline"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:insetLeft="0dp"
-            android:insetRight="0dp"
-            android:paddingHorizontal="6dp"
-            android:textSize="12sp"
-            android:text="@string/cache_area" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/clearWalk"

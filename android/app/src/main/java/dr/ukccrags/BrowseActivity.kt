@@ -31,7 +31,29 @@ class BrowseActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityBrowseBinding
     private var script: String = ""
+    /**
+     * True while an import, refresh or sync is running.
+     *
+     * Carries two side effects worth having in one place: the screen is held
+     * awake, since a region-wide import takes minutes and a sleeping screen
+     * throttles the WebView doing the work; and the shade notification is
+     * cleared the moment the work stops, however it stopped.
+     */
     private var busy = false
+        set(value) {
+            field = value
+
+            runOnUiThread {
+                ImportState.running = value
+
+                if (value) {
+                    window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    ImportProgress.clear(this)
+                }
+            }
+        }
 
     /** Written from the page's worker threads, read on the main thread. */
     private val failures = mutableListOf<String>()
@@ -62,6 +84,21 @@ class BrowseActivity : AppCompatActivity() {
 
     private var pendingOrigin: String? = null
     private var pendingCallback: GeolocationPermissions.Callback? = null
+
+    private val askShade = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* declined is fine: the on-screen progress still runs */ }
+
+    /** Asked for once per screen, and only when a long job is starting. */
+    private fun wantShade() {
+        if (android.os.Build.VERSION.SDK_INT < 33) return
+
+        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.POST_NOTIFICATIONS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        if (!granted) askShade.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+    }
 
     private val askLocation = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -170,6 +207,23 @@ class BrowseActivity : AppCompatActivity() {
         binding.web.addJavascriptInterface(Bridge(), "Android")
 
         binding.web.webChromeClient = object : WebChromeClient() {
+
+            /**
+             * Swallowed, and this matters more than it looks.
+             *
+             * Pages are read in sandboxed iframes with scripts disallowed, so
+             * Chromium reports every blocked `<script>` on every page as a
+             * console error. One crag page carries dozens; an import of a whole
+             * region carries hundreds of thousands, and the default handling
+             * writes each one to the log from the main thread. That is what
+             * turned a large import into a black screen: the UI thread spent
+             * itself on logging rather than drawing.
+             *
+             * Nothing is lost by dropping them. The script's own failures come
+             * back through the bridge instead.
+             */
+            override fun onConsoleMessage(message: android.webkit.ConsoleMessage): Boolean = true
+
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 binding.bar.visibility = if (newProgress in 1..99) View.VISIBLE else View.GONE
                 binding.bar.progress = newProgress
@@ -296,6 +350,7 @@ class BrowseActivity : AppCompatActivity() {
 
         if (busy) return
 
+        wantShade()
         busy = true
         binding.action.isEnabled = false
         synchronized(failures) { failures.clear() }
@@ -346,6 +401,7 @@ class BrowseActivity : AppCompatActivity() {
             return
         }
 
+        wantShade()
         busy = true
         binding.action.isEnabled = false
         synchronized(failures) { failures.clear() }
@@ -383,7 +439,17 @@ class BrowseActivity : AppCompatActivity() {
         progress = MaterialAlertDialogBuilder(this)
             .setView(view.root)
             .setCancelable(false)
-            .setNegativeButton(R.string.run_in_background) { dialog, _ -> dialog.dismiss() }
+            .setNegativeButton(R.string.run_in_background) { dialog, _ ->
+                dialog.dismiss()
+
+                // Back to the list rather than parked on the browser. This
+                // screen stays alive underneath — its WebView is doing the
+                // work — and the count carries on in the shade.
+                startActivity(
+                    android.content.Intent(this, CragListActivity::class.java)
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                )
+            }
             .show()
     }
 
@@ -470,6 +536,7 @@ class BrowseActivity : AppCompatActivity() {
     private fun runImport() {
         if (busy) return
 
+        wantShade()
         busy = true
         binding.action.isEnabled = false
         synchronized(failures) { failures.clear() }
@@ -629,6 +696,9 @@ class BrowseActivity : AppCompatActivity() {
         fun ticksDone(found: Int) {
             total = found
 
+            // Counts as this week's sync, so the weekly one does not repeat it.
+            AutoSync.ran(this@BrowseActivity)
+
             runOnUiThread {
                 busy = false
                 hideProgress()
@@ -684,6 +754,20 @@ class BrowseActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun progress(done: Int, total: Int, name: String) {
+            // Straight from the page's own thread. The shade is the one place
+            // progress must keep moving even when the main thread is busy —
+            // a stalled counter is indistinguishable from a stalled import.
+            ImportProgress.show(
+                this@BrowseActivity,
+                getString(R.string.importing_crags),
+                getString(R.string.importing_named, done, total, name),
+                done,
+                total,
+            )
+
+            // Something to read back afterwards when a long run went wrong.
+            if (done % 25 == 0) Log.i("UKC", "import progress: $done/$total")
+
             runOnUiThread {
                 binding.action.text = getString(R.string.importing, done, total)
 
@@ -725,6 +809,15 @@ class BrowseActivity : AppCompatActivity() {
                 CragStore.invalidate()
 
                 val missed = synchronized(failures) { failures.toList() }
+
+                // Said in the shade as well: after a long import the reader is
+                // often no longer looking at this screen.
+                ImportProgress.done(
+                    this@BrowseActivity,
+                    getString(R.string.import_done, ok, failed),
+                    if (missed.isEmpty()) getString(R.string.import_all_ok)
+                    else getString(R.string.import_some_failed),
+                )
 
                 val body = if (missed.isEmpty()) {
                     getString(R.string.import_all_ok)

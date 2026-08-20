@@ -17,11 +17,11 @@ import dr.ukccrags.databinding.ActivitySearchBinding
 import dr.ukccrags.databinding.ItemFoundBinding
 
 /**
- * Finds a climb anywhere in the library.
+ * One ticklist's climbs, in the list's own order.
  *
- * The crag screen can only search a crag you already picked, which is no help
- * when you half-remember a name and not where it was. This walks every stored
- * crag, or the climbs of one named ticklist.
+ * Searching the library at large belongs to the crag list, whose search box
+ * reads crag and climb names together. This screen exists because a ticklist
+ * is an order UKC chose, which no filter over the library can reproduce.
  */
 class SearchActivity : AppCompatActivity() {
 
@@ -32,7 +32,7 @@ class SearchActivity : AppCompatActivity() {
 
     private lateinit var ticks: Ticks
 
-    /** Set when this screen is showing one ticklist rather than the library. */
+    /** The list being shown, or null if the intent named one the app has lost. */
     private var list: Ticklist? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,18 +48,12 @@ class SearchActivity : AppCompatActivity() {
 
         ticks = Ticks(this)
 
-        val crags = CragStore.load(this)
         val listUrl = intent.getStringExtra(EXTRA_LIST)
+        val found = listUrl?.let { url -> Lists.load(this).firstOrNull { it.url == url } }
 
-        if (listUrl == null) {
-            supportActionBar?.title = getString(R.string.search_climbs)
-            pool = crags.flatMap { crag -> crag.buttresses.flatMap { it.climbs }.map { crag to it } }
-        } else {
-            val found = Lists.load(this).firstOrNull { it.url == listUrl }
-            list = found
-            supportActionBar?.title = found?.name ?: getString(R.string.ticklists)
-            pool = found?.let { Lists.climbsIn(it, crags) }.orEmpty()
-        }
+        list = found
+        supportActionBar?.title = found?.name ?: getString(R.string.ticklists)
+        pool = found?.let { Lists.climbsIn(it, CragStore.load(this)) }.orEmpty()
 
         binding.list.layoutManager = LinearLayoutManager(this)
         binding.query.doAfterTextChanged { render(it?.toString().orEmpty()) }
@@ -140,20 +134,18 @@ class SearchActivity : AppCompatActivity() {
     private fun render(query: String) {
         val wanted = query.trim().lowercase()
 
-        // A whole-library search with no query would list thousands of rows.
-        shown = when {
-            wanted.isEmpty() && intent.getStringExtra(EXTRA_LIST) == null -> emptyList()
-            wanted.isEmpty() -> pool
-            else -> pool.filter { (crag, climb) ->
+        shown = if (wanted.isEmpty()) {
+            pool
+        } else {
+            pool.filter { (crag, climb) ->
                 "${climb.name} ${climb.grade} ${crag.area}".lowercase().contains(wanted)
             }
         }
 
-        binding.count.text = when {
-            shown.isNotEmpty() ->
-                resources.getQuantityString(R.plurals.climbs, shown.size, shown.size)
-            wanted.isEmpty() -> getString(R.string.search_climbs_hint)
-            else -> getString(R.string.no_matches)
+        binding.count.text = if (shown.isEmpty()) {
+            getString(R.string.no_matches)
+        } else {
+            resources.getQuantityString(R.plurals.climbs, shown.size, shown.size)
         }
 
         binding.list.adapter = FoundAdapter()
