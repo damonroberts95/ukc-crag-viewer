@@ -216,6 +216,11 @@
     <string name="km_away">%.1f km away</string>
     <string name="import_all_hint">Imports every crag on this page, with all its climbs</string>
     <string name="backing_off">Rate limited — slowing to %1$ds</string>
+    <string name="debug_log">Log</string>
+    <string name="log_empty">Nothing logged yet. Imports, syncs and the reasons they stop appear here.</string>
+    <string name="log_copy">Copy all</string>
+    <string name="log_clear">Clear</string>
+    <string name="log_copied">Log copied</string>
     <string name="check_updates">Check for updates</string>
     <string name="checking_updates">Checking for updates…</string>
     <string name="update_failed">Could not reach GitHub to check for updates.</string>

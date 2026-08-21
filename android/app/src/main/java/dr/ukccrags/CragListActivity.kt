@@ -249,6 +249,10 @@ class CragListActivity : AppCompatActivity() {
                 Maps.openUrl(this, getString(R.string.crag_index_url))
                 return true
             }
+            R.id.log -> {
+                startActivity(Intent(this, LogActivity::class.java))
+                return true
+            }
             R.id.updates -> {
                 Updates.check(this)
                 return true

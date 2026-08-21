@@ -5,32 +5,21 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
+    <!-- The search box sits in the bar itself: over the map it cost height, and
+         the map is the point of the screen. Hidden when this screen is showing
+         one crag, where the bar carries that crag's name instead. -->
     <com.google.android.material.appbar.MaterialToolbar
         android:id="@+id/toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        style="@style/Widget.UkcCrags.Toolbar" />
+        style="@style/Widget.UkcCrags.Toolbar">
 
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
-
-        <org.osmdroid.views.MapView
-            android:id="@+id/map"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent" />
-
-        <!-- Sits over the map so the map keeps the full height. -->
         <com.google.android.material.textfield.TextInputLayout
             android:id="@+id/searchBox"
             style="@style/Widget.Material3.TextInputLayout.OutlinedBox.Dense.ExposedDropdownMenu"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_gravity="top"
-            android:layout_marginHorizontal="12dp"
-            android:layout_marginTop="8dp"
-            android:layout_marginEnd="96dp"
+            android:layout_marginEnd="8dp"
             app:boxBackgroundColor="?attr/colorSurface"
             app:startIconDrawable="@android:drawable/ic_menu_search"
             android:hint="@string/map_search_hint">
@@ -45,6 +34,18 @@
                 android:completionThreshold="1" />
 
         </com.google.android.material.textfield.TextInputLayout>
+
+    </com.google.android.material.appbar.MaterialToolbar>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <org.osmdroid.views.MapView
+            android:id="@+id/map"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
 
         <!-- Only visible once the map has been turned off north. -->
         <com.google.android.material.button.MaterialButton

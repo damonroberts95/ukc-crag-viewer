@@ -46,8 +46,25 @@ object QueueDrain {
      */
     @SuppressLint("SetJavaScriptEnabled")
     fun start(context: Context, onBatch: () -> Unit = {}) {
-        with(ImportQueue) { if (context.queuePaused) return }
-        if (running || ImportQueue.size(context) == 0) return
+        // Every reason for not starting is worth saying: "nothing is
+        // happening" is the hardest thing to diagnose after the fact.
+        with(ImportQueue) {
+            if (context.queuePaused) {
+                AppLog.add(context, "queue: paused, not reading")
+                return
+            }
+        }
+
+        if (running) {
+            AppLog.add(context, "queue: already reading")
+            return
+        }
+
+        val waiting = ImportQueue.size(context)
+
+        if (waiting == 0) return
+
+        AppLog.add(context, "queue: starting, $waiting crags waiting")
 
         val app = context.applicationContext
         val script = runCatching {
@@ -99,6 +116,7 @@ object QueueDrain {
 
             if (batch.isEmpty()) {
                 val held = CragStore.load(app).size
+                AppLog.add(app, "queue: finished, library holds $held crags")
                 ImportProgress.done(
                     app,
                     app.getString(R.string.queue_done),
@@ -149,7 +167,8 @@ object QueueDrain {
 
             @JavascriptInterface
             fun finished(ok: Int, failed: Int) {
-                Log.i("UKC", "queue batch done: $ok ok, $failed failed")
+                AppLog.add(app, "queue: batch done, $ok read, $failed failed, " +
+                    "${(ImportQueue.size(app) - batch.size).coerceAtLeast(0)} left")
 
                 // Struck off whether or not each one worked: a crag that cannot
                 // be read will not read any better on the next pass, and a
@@ -165,12 +184,12 @@ object QueueDrain {
 
             @JavascriptInterface
             fun cragFailed(name: String, url: String, reason: String) {
-                Log.w("UKC", "queue: $name — $reason")
+                AppLog.add(app, "queue: could not read $name — $reason")
             }
 
             @JavascriptInterface
             fun failed(reason: String) {
-                Log.w("UKC", "queue batch failed: $reason")
+                AppLog.add(app, "queue: STOPPED — $reason")
                 handler.post { stop() }
             }
 
@@ -194,7 +213,7 @@ object QueueDrain {
 
             @JavascriptInterface
             fun throttled(spacingMs: Int) {
-                Log.i("UKC", "queue backing off to ${spacingMs}ms")
+                AppLog.add(app, "queue: UKC pushed back, spacing now ${spacingMs}ms")
             }
 
             /**

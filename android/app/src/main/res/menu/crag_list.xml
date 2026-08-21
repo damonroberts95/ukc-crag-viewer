@@ -86,6 +86,11 @@
     </item>
 
     <item
+        android:id="@+id/log"
+        android:title="@string/debug_log"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/updates"
         android:title="@string/check_updates"
         app:showAsAction="never" />

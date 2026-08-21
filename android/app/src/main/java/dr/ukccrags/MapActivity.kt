@@ -106,7 +106,15 @@ class MapActivity : AppCompatActivity() {
             CragStore.load(this).firstOrNull { it.area == area }
         }
 
-        supportActionBar?.title = single?.area ?: getString(R.string.map)
+        // The bar holds either a crag's name or the search box, not both: one
+        // crag's buttresses are not something you search a library for.
+        if (single != null) {
+            supportActionBar?.title = single?.area
+            binding.searchBox.visibility = View.GONE
+        } else {
+            supportActionBar?.title = null
+            binding.searchBox.visibility = View.VISIBLE
+        }
 
         binding.map.setTileSource(TileSourceFactory.MAPNIK)
         applySource(MapSources.chosen(this))

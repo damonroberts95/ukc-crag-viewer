@@ -763,7 +763,7 @@ class BrowseActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun ticksFailed(reason: String) {
-            Log.w("UKC", "tick sync failed: $reason")
+            AppLog.add(this@BrowseActivity, "logbook sync failed: $reason")
 
             runOnUiThread {
                 busy = false
@@ -788,7 +788,7 @@ class BrowseActivity : AppCompatActivity() {
         /** Records why a crag didn't import, so the run can name it at the end. */
         @JavascriptInterface
         fun cragFailed(name: String, url: String, reason: String) {
-            Log.w("UKC", "import failed: $name ($url) — $reason")
+            AppLog.add(this@BrowseActivity, "import: could not read $name — $reason")
             synchronized(failures) { failures += "$name — $reason" }
         }
 
@@ -806,7 +806,7 @@ class BrowseActivity : AppCompatActivity() {
             )
 
             // Something to read back afterwards when a long run went wrong.
-            if (done % 25 == 0) Log.i("UKC", "import progress: $done/$total")
+            if (done % 50 == 0) AppLog.add(this@BrowseActivity, "import: $done/$total")
 
             runOnUiThread {
                 binding.action.text = getString(R.string.importing, done, total)

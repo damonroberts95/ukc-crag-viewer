@@ -110,12 +110,13 @@ object AutoSync {
 
             @JavascriptInterface
             fun ticksDone(found: Int) {
+                AppLog.add(app, "weekly logbook sync: $found ticks, $added new")
                 handler.post { settle(true) }
             }
 
             @JavascriptInterface
             fun ticksFailed(reason: String) {
-                Log.w("UKC", "weekly sync failed: $reason")
+                AppLog.add(app, "weekly logbook sync failed: $reason")
                 handler.post { settle(false) }
             }
 
