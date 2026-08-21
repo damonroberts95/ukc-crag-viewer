@@ -20,6 +20,17 @@
         android:icon="@drawable/ic_my_location"
         app:showAsAction="always" />
 
+    <!-- Both hidden unless a search has left crags waiting to be read. -->
+    <item
+        android:id="@+id/queue"
+        android:title="@string/queue_running"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/queue_forget"
+        android:title="@string/queue_forget"
+        app:showAsAction="never" />
+
     <item
         android:id="@+id/nearest"
         android:title="@string/nearest_first"

@@ -117,6 +117,12 @@ class MapActivity : AppCompatActivity() {
             )
         }
         binding.map.setMultiTouchControls(true)
+
+        // A pinch leaves the map on a fractional zoom, and a fractional zoom
+        // means every tile is drawn scaled — soft at any distance, which is
+        // what made even a zoomed-out map look blurry. Rounding settles on a
+        // whole level, where a tile is drawn at the size it was made.
+        binding.map.setZoomRounding(true)
         binding.map.zoomController.setVisibility(
             org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER
         )

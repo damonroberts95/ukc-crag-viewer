@@ -533,6 +533,48 @@ class BrowseActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Takes the names off a search and leaves them for later.
+     *
+     * A region-wide search names thousands of crags. Reading them here and now
+     * meant a quarter of an hour of held-open screen that lost its place if
+     * anything interrupted it. This costs one request; [QueueDrain] does the
+     * reading, a batch at a time, and survives being stopped.
+     */
+    private fun queueResults() {
+        binding.web.evaluateJavascript("window.__ukcResultRows()") { raw ->
+            val json = unquote(raw)
+
+            val found = runCatching {
+                val array = JSONArray(json)
+                (0 until array.length()).mapNotNull { index ->
+                    val node = array.optJSONObject(index) ?: return@mapNotNull null
+                    Queued(node.optString("name"), node.optString("url"))
+                }
+            }.getOrDefault(emptyList())
+
+            busy = false
+            hideProgress()
+
+            if (found.isEmpty()) {
+                Toast.makeText(this, R.string.import_failed, Toast.LENGTH_SHORT).show()
+                return@evaluateJavascript
+            }
+
+            val added = ImportQueue.add(this, found)
+            with(ImportQueue) { queuePaused = false }
+
+            MaterialAlertDialogBuilder(this)
+                .setTitle(resources.getQuantityString(R.plurals.queued, added, added))
+                .setMessage(
+                    getString(R.string.queued_explained, found.size - added)
+                )
+                .setPositiveButton(R.string.see_crags) { _, _ -> finish() }
+                .setNegativeButton(R.string.keep_browsing, null)
+                .show()
+        }
+    }
+
     private fun runImport() {
         if (busy) return
 
@@ -548,9 +590,7 @@ class BrowseActivity : AppCompatActivity() {
             val kind = runCatching { JSONObject(json ?: "{}") }.getOrNull()
 
             if (kind?.optString("kind") == "results") {
-                binding.web.evaluateJavascript(
-                    "window.__ukcImportResults($DELAY_MS, $WORKERS, true)", null
-                )
+                queueResults()
             } else {
                 binding.web.evaluateJavascript("window.__ukcImportCurrent()", null)
             }

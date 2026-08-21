@@ -57,6 +57,9 @@ automated check; anything user-visible needs a look on the phone.
     `MapActivity` is the osmdroid map.
   - `AutoSync` — weekly logbook read in an unattached WebView, run on opening
     the app only.
+  - `ImportQueue` / `QueueDrain` — a search queues crag URLs to
+    `files/queue.json`; batches of 40 are read in an unattached WebView while
+    the app is open, resumable across restarts. Refresh-all uses the same queue.
   - `MapSources` — OSM, Esri or Sentinel-2 tiles, all online and all keyless.
     OSM forbids bulk tile download, so there is no "save this area"; tiles
     already seen are kept a year in a 600MB cache.

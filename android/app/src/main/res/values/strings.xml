@@ -147,6 +147,21 @@
     <string name="run_in_background">Back to crags</string>
     <string name="importing_crags">Importing crags</string>
     <string name="channel_import">Import progress</string>
+    <string name="queue_running">Adding crags</string>
+    <string name="queue_done">Crags added</string>
+    <string name="queued_explained">They will be read in the background whenever the app is open, a few at a time, and picked up where they left off if you close it.\n\n%1$d were already in your library.</string>
+    <string name="queue_paused">Paused — tap to carry on</string>
+    <string name="queue_pause">Pause adding crags</string>
+    <string name="queue_resume">Carry on adding crags</string>
+    <string name="queue_forget">Forget the crags still queued</string>
+    <plurals name="queued">
+        <item quantity="one">%d crag queued</item>
+        <item quantity="other">%d crags queued</item>
+    </plurals>
+    <plurals name="crags_left">
+        <item quantity="one">%d crag left to read</item>
+        <item quantity="other">%d crags left to read</item>
+    </plurals>
     <string name="importing_named">%1$d of %2$d · %3$s</string>
     <string name="clear_crags">Clear all crags</string>
     <string name="clear_crags_warning">Deletes all %1$d saved crags and their topo photos. Your ticks are kept.</string>

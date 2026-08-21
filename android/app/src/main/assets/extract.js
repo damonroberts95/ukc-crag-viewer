@@ -1135,6 +1135,18 @@
     Android.finished(ok + skipped, bad);
   }
 
+  /**
+   * The crags a search found, named but not read. One request's worth of work:
+   * the app queues these and reads them afterwards, a batch at a time.
+   */
+  window.__ukcResultRows = function () {
+    return JSON.stringify(
+      resultRows()
+        .filter((c) => c.routes !== 0)
+        .map((c) => ({ name: c.name, url: c.url }))
+    );
+  };
+
   window.__ukcImportResults = function (delayMs, workers, skipExisting) {
     const all = resultRows();
     if (!all.length) { Android.failed('no results on this page'); return; }

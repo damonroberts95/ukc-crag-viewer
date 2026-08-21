@@ -112,6 +112,14 @@ class CragListActivity : AppCompatActivity() {
 
         ImportState.watch(whileImporting)
 
+        // Whatever a search left behind gets read while the list is open,
+        // a batch at a time. Stopping costs a batch, not the run.
+        QueueDrain.start(this) {
+            reload()
+            render()
+            invalidateOptionsMenu()
+        }
+
         // Opening the app is the only chance the sync gets: nothing here runs
         // while the app is closed.
         AutoSync.runIfDue(this, library) { added ->
@@ -147,6 +155,20 @@ class CragListActivity : AppCompatActivity() {
     override fun onPrepareOptionsMenu(menu: Menu): Boolean {
         menu.findItem(R.id.nearest)?.isChecked = nearestFirst
 
+        // Only worth showing while there is a queue to talk about.
+        val left = ImportQueue.size(this)
+        val paused = with(ImportQueue) { queuePaused }
+
+        menu.findItem(R.id.queue)?.apply {
+            isVisible = left > 0
+            title = when {
+                paused -> getString(R.string.queue_paused)
+                else -> resources.getQuantityString(R.plurals.crags_left, left, left)
+            }
+        }
+
+        menu.findItem(R.id.queue_forget)?.isVisible = left > 0
+
         // The sign-in state matters enough to show on the closed menu, not only
         // inside the submenu that holds it.
         menu.findItem(R.id.logbook_group)?.setTitle(
@@ -181,11 +203,25 @@ class CragListActivity : AppCompatActivity() {
                 startActivity(Intent(this, BrowseActivity::class.java))
                 return true
             }
+            R.id.queue -> {
+                with(ImportQueue) { queuePaused = !queuePaused }
+
+                if (!with(ImportQueue) { queuePaused }) {
+                    QueueDrain.start(this) { reload(); render(); invalidateOptionsMenu() }
+                }
+
+                invalidateOptionsMenu()
+                return true
+            }
+            R.id.queue_forget -> {
+                ImportQueue.clear(this)
+                with(ImportQueue) { queuePaused = false }
+                invalidateOptionsMenu()
+                Toast.makeText(this, R.string.queue_forget, Toast.LENGTH_SHORT).show()
+                return true
+            }
             R.id.refresh -> {
-                startActivity(
-                    Intent(this, BrowseActivity::class.java)
-                        .putExtra(BrowseActivity.EXTRA_REFRESH, true)
-                )
+                refreshEverything()
                 return true
             }
             R.id.sign_in -> {
@@ -220,6 +256,45 @@ class CragListActivity : AppCompatActivity() {
         }
 
         return super.onOptionsItemSelected(item)
+    }
+
+    /**
+     * Re-reads the whole library through the queue rather than in one sitting.
+     *
+     * A refresh of four thousand crags is the same work as importing them, and
+     * had the same problem: one long run that lost its place if anything
+     * interrupted it. Queued, it survives being stopped, and it can be paused
+     * when the phone is needed for something else.
+     */
+    private fun refreshEverything() {
+        val held = library.map { Queued(it.area, it.sourceUrl) }
+
+        if (held.isEmpty()) {
+            Toast.makeText(this, R.string.nothing_to_refresh, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.refresh_crags)
+            .setMessage(
+                resources.getQuantityString(R.plurals.crags_left, held.size, held.size)
+            )
+            .setPositiveButton(R.string.refresh_crags) { _, _ ->
+                // Held crags are the point of a refresh, so nothing is skipped.
+                val added = ImportQueue.add(this, held, skipHeld = false)
+                with(ImportQueue) { queuePaused = false }
+
+                QueueDrain.start(this) { reload(); render(); invalidateOptionsMenu() }
+                invalidateOptionsMenu()
+
+                Toast.makeText(
+                    this,
+                    resources.getQuantityString(R.plurals.queued, added, added),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /** Wiping the library is easy to do by accident, so name the cost first. */
@@ -310,6 +385,12 @@ class CragListActivity : AppCompatActivity() {
         // An import may have added crags, and with them types and grades.
         reload()
         setUpClimbFilters()
+
+        QueueDrain.start(this) {
+            reload()
+            render()
+            invalidateOptionsMenu()
+        }
 
         // Signing in happens in the browser, so re-label the menu on the way back.
         invalidateOptionsMenu()
