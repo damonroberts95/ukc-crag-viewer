@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.widget.doAfterTextChanged
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dr.ukccrags.databinding.ActivityMapBinding
@@ -57,6 +58,12 @@ class MapActivity : AppCompatActivity() {
 
     /** Where the pins were last built for, so a small pan can be ignored. */
     private var builtFor: org.osmdroid.util.BoundingBox? = null
+
+    /** The current suggestions, in the order the dropdown lists them. */
+    private var found: List<Pair<String, GeoPoint>> = emptyList()
+
+    private var pendingQuery = ""
+    private val suggestWhenStill = Runnable { suggest(pendingQuery) }
 
     /** What each crag mostly holds, and the pin colour that follows from it. */
     private var pinTypes: Map<String, String> = emptyMap()
@@ -150,6 +157,7 @@ class MapActivity : AppCompatActivity() {
 
         startLocating()
         binding.here.setOnClickListener { goToMe() }
+        setUpSearch()
         binding.clearWalk.setOnClickListener { clearWalk() }
 
         // Zooming in far enough swaps crags for their buttresses, so the map
@@ -286,6 +294,96 @@ class MapActivity : AppCompatActivity() {
             latitudeSpan / 3 ||
             kotlin.math.abs(box.centerLongitude - last.centerLongitude) >
             longitudeSpan / 3
+    }
+
+    /**
+     * Finding somewhere on the map.
+     *
+     * Two kinds of answer from one box. Stored crags are matched here, which
+     * costs nothing and works with no signal — the case that matters at the
+     * rock. Place names go to Android's own geocoder, which needs a connection;
+     * it is how you get the map to the valley before you have imported anything
+     * in it. Crags come first in the list either way: this app's own library is
+     * the more likely thing to be looking for.
+     */
+    private fun setUpSearch() {
+        binding.search.setOnItemClickListener { _, _, position, _ ->
+            found.getOrNull(position)?.let { (_, where) ->
+                binding.map.controller.animateTo(where, 15.0, 700L)
+
+                // Out of the way once it has done its job.
+                binding.search.setText("", false)
+                binding.search.clearFocus()
+                binding.searchBox.clearFocus()
+            }
+        }
+
+        binding.search.doAfterTextChanged { text ->
+            val query = text?.toString().orEmpty().trim()
+
+            settle.removeCallbacks(suggestWhenStill)
+            if (query.length < 2) return@doAfterTextChanged
+
+            pendingQuery = query
+            settle.postDelayed(suggestWhenStill, SUGGEST_MS)
+        }
+    }
+
+    private fun suggest(query: String) {
+        val wanted = query.lowercase()
+
+        // Already only the crags with a published position.
+        val hits = crags
+            .filter { it.area.lowercase().contains(wanted) }
+            .take(CRAG_HITS)
+            .map { crag ->
+                getString(
+                    R.string.map_search_crag,
+                    crag.area,
+                    resources.getQuantityString(
+                        R.plurals.climbs, crag.climbCount, crag.climbCount,
+                    ),
+                ) to GeoPoint(crag.latitude!!, crag.longitude!!)
+            }
+
+        show(hits)
+
+        // The geocoder is a network call, so the crags are offered first and
+        // the places join them when they arrive.
+        if (!android.location.Geocoder.isPresent()) return
+
+        Thread {
+            val places = runCatching {
+                @Suppress("DEPRECATION")
+                android.location.Geocoder(this)
+                    .getFromLocationName(query, PLACE_HITS)
+                    .orEmpty()
+                    .map { place ->
+                        val name = listOfNotNull(
+                            place.featureName,
+                            place.locality ?: place.subAdminArea,
+                            place.countryName,
+                        ).distinct().joinToString(", ")
+
+                        name to GeoPoint(place.latitude, place.longitude)
+                    }
+            }.getOrDefault(emptyList())
+
+            runOnUiThread {
+                if (isFinishing || binding.search.text?.toString()?.trim() != query) {
+                    return@runOnUiThread
+                }
+
+                show(hits + places)
+            }
+        }.start()
+    }
+
+    private fun show(hits: List<Pair<String, GeoPoint>>) {
+        found = hits
+
+        binding.search.setSimpleItems(hits.map { it.first }.toTypedArray())
+        if (hits.isNotEmpty() && binding.search.hasFocus()) binding.search.showDropDown()
     }
 
     /** The reader's own position, when the permission is already granted. */
@@ -831,6 +929,12 @@ class MapActivity : AppCompatActivity() {
 
         /** How long the map has to sit still before the pins are rebuilt. */
         private const val SETTLE_MS = 140L
+
+        /** How long typing has to stop before anything is looked up. */
+        private const val SUGGEST_MS = 300L
+
+        private const val CRAG_HITS = 6
+        private const val PLACE_HITS = 3
 
         /** Precision is asked for once, then left alone. */
         private const val KEY_ASKED_PRECISE = "asked_precise"

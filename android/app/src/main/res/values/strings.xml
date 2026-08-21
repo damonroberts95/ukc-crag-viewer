@@ -74,6 +74,9 @@
     </plurals>
     <string name="search_everything">Search crags and climbs</string>
     <string name="map">Map</string>
+    <string name="map_search_hint">Find a crag or a place</string>
+    <string name="map_search_crag">%1$s · %2$s</string>
+    <string name="map_search_nothing">Nothing found for “%1$s”</string>
     <string name="refresh_location">Refresh my location</string>
     <string name="location_fresh">Location updated</string>
     <string name="locating">Finding your location…</string>

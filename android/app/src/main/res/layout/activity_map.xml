@@ -21,6 +21,31 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
+        <!-- Sits over the map so the map keeps the full height. -->
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/searchBox"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.Dense.ExposedDropdownMenu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:layout_marginHorizontal="12dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="96dp"
+            app:boxBackgroundColor="?attr/colorSurface"
+            app:startIconDrawable="@android:drawable/ic_menu_search"
+            android:hint="@string/map_search_hint">
+
+            <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                android:id="@+id/search"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="text"
+                android:imeOptions="actionSearch"
+                android:maxLines="1"
+                android:completionThreshold="1" />
+
+        </com.google.android.material.textfield.TextInputLayout>
+
         <!-- Only visible once the map has been turned off north. -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/north"
