@@ -122,7 +122,11 @@ class CragListActivity : AppCompatActivity() {
 
         ImportState.watch(whileImporting)
 
-        binding.queueLine.setOnClickListener { toggleQueue() }
+        // A tap is impatience, not a stop: it starts the reading now rather
+        // than waiting for the next batch or the next time the app is opened.
+        // Pausing is the long press, and the overflow entry.
+        binding.queueLine.setOnClickListener { kickQueue() }
+        binding.queueLine.setOnLongClickListener { toggleQueue(); true }
 
         // Crags scraped before the database existed are still JSON files. Moving
         // them in is a one-off, off the main thread, and the list fills in as it
@@ -159,7 +163,17 @@ class CragListActivity : AppCompatActivity() {
         invalidateOptionsMenu()
     }
 
-    /** Stops or starts the queue, from the line at the top of the list. */
+    /** Gets the reading going now, whatever it was waiting for. */
+    private fun kickQueue() {
+        with(ImportQueue) { queuePaused = false }
+
+        QueueDrain.start(this, binding.root) { refreshFromStore() }
+        refreshFromStore()
+
+        Toast.makeText(this, R.string.queue_kicked, Toast.LENGTH_SHORT).show()
+    }
+
+    /** Stops or starts the queue: the long press, and the overflow entry. */
     private fun toggleQueue() {
         with(ImportQueue) { queuePaused = !queuePaused }
 
@@ -200,10 +214,7 @@ class CragListActivity : AppCompatActivity() {
 
         menu.findItem(R.id.queue)?.apply {
             isVisible = left > 0
-            title = when {
-                paused -> getString(R.string.queue_paused)
-                else -> resources.getQuantityString(R.plurals.crags_left, left, left)
-            }
+            setTitle(if (paused) R.string.queue_resume else R.string.queue_pause)
         }
 
         menu.findItem(R.id.queue_forget)?.isVisible = left > 0

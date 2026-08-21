@@ -154,6 +154,7 @@
     <string name="queue_done">Crags added</string>
     <string name="queued_explained">They will be read in the background whenever the app is open, a few at a time, and picked up where they left off if you close it.\n\n%1$d were already in your library.</string>
     <string name="queue_paused">Paused — tap to carry on</string>
+    <string name="queue_kicked">Reading crags now</string>
     <string name="queue_pause">Pause adding crags</string>
     <string name="queue_resume">Carry on adding crags</string>
     <string name="queue_forget">Forget the crags still queued</string>
