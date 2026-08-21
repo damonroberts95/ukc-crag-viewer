@@ -157,6 +157,17 @@ object AutoSync {
         web.addJavascriptInterface(bridge, "Android")
 
         web.webViewClient = object : WebViewClient() {
+
+            /** An unclaimed renderer death would take the whole app with it. */
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: android.webkit.RenderProcessGoneDetail?,
+            ): Boolean {
+                AppLog.add(app, "weekly logbook sync: the browser engine died")
+                handler.post { settle(false) }
+                return true
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 if (settled) return
 

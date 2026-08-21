@@ -201,6 +201,7 @@
     <string name="browse_title">Add crags</string>
     <string name="login_hint">Log in to UKC here if you want member-only data. Your details go straight to ukclimbing.com.</string>
     <string name="imported">Imported %1$s (%2$d routes)</string>
+    <string name="browser_died">The browser ran out of room and closed. Nothing imported was lost — try a smaller search.</string>
     <string name="import_failed">Nothing to import on this page</string>
     <string name="importing">Importing %1$d of %2$d…</string>
     <string name="import_done">Imported %1$d, %2$d failed</string>

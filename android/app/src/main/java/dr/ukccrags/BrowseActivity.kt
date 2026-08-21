@@ -180,6 +180,9 @@ class BrowseActivity : AppCompatActivity() {
         // Lets the import be driven and inspected from adb in debug builds.
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
 
+        // While this screen is reading pages, the queue does not.
+        QueueDrain.holdWhileBrowsing(true)
+
         script = assets.open("extract.js").bufferedReader().use { it.readText() }
 
         // A "no" to the geolocation prompt is remembered per origin for the
@@ -252,6 +255,25 @@ class BrowseActivity : AppCompatActivity() {
         }
 
         binding.web.webViewClient = object : WebViewClient() {
+
+            /**
+             * The renderer can be killed under a heavy page — a whole region of
+             * search results — and an unclaimed death kills the app. Claimed
+             * here: say what happened and leave, rather than vanishing.
+             */
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: android.webkit.RenderProcessGoneDetail?,
+            ): Boolean {
+                AppLog.add(this@BrowseActivity, "browser: the engine died, closing the screen")
+
+                busy = false
+                hideProgress()
+                Toast.makeText(this@BrowseActivity, R.string.browser_died, Toast.LENGTH_LONG).show()
+                finish()
+                return true
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 logging = false
                 binding.action.isEnabled = false
@@ -641,6 +663,7 @@ class BrowseActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        QueueDrain.holdWhileBrowsing(false)
         hideProgress()
         super.onDestroy()
     }

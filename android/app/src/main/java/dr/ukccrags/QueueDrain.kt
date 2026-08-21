@@ -58,6 +58,24 @@ object QueueDrain {
     /** Waiting to try again after something went wrong out on the network. */
     private val later = Handler(Looper.getMainLooper())
 
+    /**
+     * Set while the browser screen is open.
+     *
+     * Two WebViews reading UKC pages at once share one renderer process, and
+     * loading a region's search results in one while the other grinds through
+     * crag pages is what killed it — taking the app with it. The reader's own
+     * screen wins; the queue can wait a minute.
+     */
+    private var browsing = false
+
+    fun holdWhileBrowsing(hold: Boolean) {
+        browsing = hold
+        if (hold) stopNow = true
+    }
+
+    /** Asked of the running drain between batches. */
+    private var stopNow = false
+
     fun busy(): Boolean = running
 
     /**
@@ -77,6 +95,13 @@ object QueueDrain {
                 return
             }
         }
+
+        if (browsing) {
+            AppLog.add(context, "queue: waiting for the browser screen to close")
+            return
+        }
+
+        stopNow = false
 
         if (running) {
             AppLog.add(context, "queue: already reading")
@@ -159,6 +184,12 @@ object QueueDrain {
         /** Hands the page the next batch, or finishes if there is none left. */
         fun feed() {
             with(ImportQueue) { if (app.queuePaused) { stop(); return } }
+
+            if (stopNow) {
+                AppLog.add(app, "queue: standing down, the browser screen is open")
+                stop()
+                return
+            }
 
             batch = ImportQueue.next(app, BATCH)
 
@@ -318,6 +349,22 @@ object QueueDrain {
         web.addJavascriptInterface(bridge, "Android")
 
         web.webViewClient = object : WebViewClient() {
+
+            /**
+             * A renderer that dies takes the whole app with it unless the death
+             * is claimed here. Claim it, say so, and try again later.
+             */
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: android.webkit.RenderProcessGoneDetail?,
+            ): Boolean {
+                handler.post {
+                    stop()
+                    tryAgainLater("the browser engine died under it")
+                }
+                return true
+            }
+
             override fun onReceivedError(
                 view: WebView?,
                 request: android.webkit.WebResourceRequest?,
