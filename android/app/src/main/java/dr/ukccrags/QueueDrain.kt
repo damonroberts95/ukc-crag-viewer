@@ -63,6 +63,12 @@ object QueueDrain {
         var batch: List<Queued> = emptyList()
         var ready = false
 
+        // The bar has to describe the whole job. Reporting each batch's own
+        // progress made it fill and empty forty crags at a time, which reads as
+        // a stuck or looping import rather than a steady one.
+        var planned = 0
+        var leftAtBatch = 0
+
         fun stop() {
             running = false
             ImportState.running = false
@@ -106,14 +112,17 @@ object QueueDrain {
                 return
             }
 
-            val left = ImportQueue.size(app)
+            leftAtBatch = ImportQueue.size(app)
+            if (planned == 0) planned = leftAtBatch
 
             ImportProgress.show(
                 app,
                 app.getString(R.string.queue_running),
-                app.resources.getQuantityString(R.plurals.crags_left, left, left),
-                0,
-                0,
+                app.resources.getQuantityString(
+                    R.plurals.crags_left, leftAtBatch, leftAtBatch,
+                ),
+                planned - leftAtBatch,
+                planned,
             )
 
             web.evaluateJavascript(
@@ -167,18 +176,15 @@ object QueueDrain {
 
             @JavascriptInterface
             fun progress(done: Int, total: Int, name: String) {
-                val left = ImportQueue.size(app) - done
+                // Where this batch has got to, counted against the whole queue.
+                val left = (leftAtBatch - done).coerceAtLeast(0)
 
                 ImportProgress.show(
                     app,
                     app.getString(R.string.queue_running),
-                    app.resources.getQuantityString(
-                        R.plurals.crags_left,
-                        left.coerceAtLeast(0),
-                        left.coerceAtLeast(0),
-                    ),
-                    done,
-                    total,
+                    app.resources.getQuantityString(R.plurals.crags_left, left, left),
+                    (planned - left).coerceIn(0, planned),
+                    planned,
                 )
             }
 
