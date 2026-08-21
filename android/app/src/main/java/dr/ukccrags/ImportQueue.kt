@@ -5,8 +5,12 @@ import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** A crag waiting to be read, as UKC's search hands it over. */
-data class Queued(val name: String, val url: String)
+/**
+ * A crag waiting to be read, as UKC's search hands it over. [tries] counts the
+ * reads that failed, so a crag lost to a passing network fault gets another
+ * chance without a crag that cannot be read going round for ever.
+ */
+data class Queued(val name: String, val url: String, val tries: Int = 0)
 
 /**
  * Crags still to fetch, kept on disk.
@@ -50,7 +54,8 @@ object ImportQueue {
             (0 until array.length()).mapNotNull { index ->
                 val node = array.optJSONObject(index) ?: return@mapNotNull null
                 val url = node.optString("url")
-                if (url.isBlank()) null else Queued(node.optString("name"), url)
+                if (url.isBlank()) null
+                else Queued(node.optString("name"), url, node.optInt("tries", 0))
             }
         }.getOrDefault(emptyList())
     }
@@ -78,6 +83,12 @@ object ImportQueue {
         return fresh.size
     }
 
+    /** Puts failed crags back, at the end, with their count of tries raised. */
+    fun requeue(context: Context, items: List<Queued>) {
+        if (items.isEmpty()) return
+        write(context, all(context) + items)
+    }
+
     /** The next few to read. Batches are small so little is lost to a kill. */
     fun next(context: Context, count: Int): List<Queued> = all(context).take(count)
 
@@ -94,7 +105,12 @@ object ImportQueue {
         val array = JSONArray()
 
         for (item in items) {
-            array.put(JSONObject().put("name", item.name).put("url", item.url))
+            array.put(
+                JSONObject()
+                    .put("name", item.name)
+                    .put("url", item.url)
+                    .put("tries", item.tries)
+            )
         }
 
         // Written whole, so a kill mid-write cannot leave half a list.
@@ -110,7 +126,12 @@ object ImportQueue {
         val array = JSONArray()
 
         for (item in items) {
-            array.put(JSONObject().put("name", item.name).put("url", item.url))
+            array.put(
+                JSONObject()
+                    .put("name", item.name)
+                    .put("url", item.url)
+                    .put("tries", item.tries)
+            )
         }
 
         return array.toString()

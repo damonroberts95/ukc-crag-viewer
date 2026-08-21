@@ -58,24 +58,30 @@ class LogActivity : AppCompatActivity() {
     }
 
     private fun draw(follow: Boolean) {
-        val text = AppLog.read(this)
+        val text = AppLog.read(this).ifBlank { getString(R.string.log_empty) }
 
-        binding.log.text = text.ifBlank { getString(R.string.log_empty) }
+        // Setting the same text again is what threw the view back to the top
+        // every second and a half. Nothing new, nothing touched.
+        if (text == shown) return
 
-        // Newest lines are at the bottom, and the bottom is where the answer to
-        // "what is it doing now" is — but only follow if the reader has not
-        // scrolled up to read something.
-        if (!follow) return
+        // Whether to follow has to be decided before the text changes, since
+        // replacing it moves the scroll position under us.
+        val wasAtBottom = follow && !binding.scroll.canScrollVertically(1)
 
-        binding.scroll.post {
-            val atBottom = !binding.scroll.canScrollVertically(1)
-            if (atBottom || following) binding.scroll.fullScroll(android.view.View.FOCUS_DOWN)
-        }
+        shown = text
+        binding.log.text = text
+
+        if (!wasAtBottom && !first) return
+
+        first = false
+        binding.scroll.post { binding.scroll.fullScroll(android.view.View.FOCUS_DOWN) }
     }
 
-    /** True until the reader scrolls away from the bottom. */
-    private val following: Boolean
-        get() = !binding.scroll.canScrollVertically(1)
+    /** What the view is already showing, so it is not rewritten needlessly. */
+    private var shown: String? = null
+
+    /** The first draw follows regardless: the newest line is the point. */
+    private var first = true
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menu.add(0, COPY, 0, R.string.log_copy)

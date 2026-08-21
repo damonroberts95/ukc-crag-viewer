@@ -43,6 +43,9 @@ object QueueDrain {
      */
     private const val BATCH_TIMEOUT_MS = 120_000L
 
+    /** How many times a crag may fail before it is given up on. */
+    private const val RETRIES = 1
+
     private const val DELAY_MS = 250
     private const val WORKERS = 6
 
@@ -104,6 +107,9 @@ object QueueDrain {
         var planned = 0
         var leftAtBatch = 0
 
+        /** Crags this batch could not read, by URL. */
+        val unread = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
         fun stop() {
             running = false
             ImportState.running = false
@@ -163,6 +169,7 @@ object QueueDrain {
                 planned,
             )
 
+            unread.clear()
             AppLog.add(app, "queue: reading a batch of ${batch.size}, $leftAtBatch left")
 
             // If a batch never reports back, the drain would sit "already
@@ -201,10 +208,20 @@ object QueueDrain {
                 AppLog.add(app, "queue: batch done, $ok read, $failed failed, " +
                     "${(ImportQueue.size(app) - batch.size).coerceAtLeast(0)} left")
 
-                // Struck off whether or not each one worked: a crag that cannot
-                // be read will not read any better on the next pass, and a
-                // queue that never shrinks never ends.
+                // A crag that failed gets one more go at the back of the queue:
+                // most failures are a passing network fault, not a bad page.
+                // After that it is struck off, since a queue that never shrinks
+                // never ends.
+                val again = batch.filter { it.url in unread && it.tries < RETRIES }
+                    .map { it.copy(tries = it.tries + 1) }
+
                 ImportQueue.drop(app, batch)
+                ImportQueue.requeue(app, again)
+
+                if (again.isNotEmpty()) {
+                    AppLog.add(app, "queue: ${again.size} to try again later")
+                }
+
                 CragStore.invalidate()
 
                 handler.post {
@@ -216,6 +233,7 @@ object QueueDrain {
             @JavascriptInterface
             fun cragFailed(name: String, url: String, reason: String) {
                 AppLog.add(app, "queue: could not read $name — $reason")
+                if (url.isNotBlank()) unread.add(url)
             }
 
             @JavascriptInterface

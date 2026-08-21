@@ -271,8 +271,10 @@
 
   const cragIdOf = (url) => (url.match(/-(\d+)\/?$/) || [])[1] || url;
 
-  // A crag page builds its table in ~200ms; anything slower is a dud page.
-  const LOAD_TIMEOUT_MS = 4000;
+  // A crag page builds its table in ~200ms, but the request has to cross the
+  // network first: four seconds was tight enough that a slow patch — a VPN, a
+  // train — read as a dud page and lost the crag.
+  const LOAD_TIMEOUT_MS = 9000;
 
   /** The most any one crag may take, whichever way it is being read. */
   const CRAG_TIMEOUT_MS = 20000;
