@@ -11,6 +11,25 @@
   const clean = (v) => (v || '').replace(/\s+/g, ' ').trim();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  /*
+   * Pacing. A pool of workers each pausing exactly 250ms produces a metronome:
+   * six requests, a gap, six requests, hour after hour. That is the shape a
+   * rate limiter is looking for, and a long import kept dying part way through
+   * rather than being told to slow down. So every wait is scattered, every so
+   * often a worker takes a longer breather, and when one worker does get
+   * throttled they all stand back together instead of taking turns being
+   * refused.
+   */
+
+  /** A wait that is never twice the same: 55% to 145% of what was asked. */
+  const jitter = (ms) => sleep(Math.round(ms * (0.55 + Math.random() * 0.9)));
+
+  /** Roughly one page in twelve, a much longer pause. */
+  function breather(ms) {
+    if (Math.random() > 0.08) return Promise.resolve();
+    return sleep(Math.round(ms * (4 + Math.random() * 4)));
+  }
+
   const KNOWN_TYPES = [
     'Bouldering', 'Boulder', 'Trad', 'Sport', 'Winter', 'Aid',
     'Alpine', 'Ice', 'Mixed', 'Via Ferrata', 'Scrambling',
@@ -1012,13 +1031,31 @@
     let spacing = delayMs;
     let stop = false;
 
+    // When one worker is refused, every worker waits: six of them discovering
+    // the same block one after another is what turns a slowdown into a stop.
+    let holdUntil = 0;
+
+    async function waitOutAnyHold(crag) {
+      while (Date.now() < holdUntil && !stop) {
+        await sleep(Math.min(750, Math.max(50, holdUntil - Date.now())));
+
+        // Keep the count alive so a long hold does not read as a dead import.
+        Android.progress(done + skipped, crags.length + skipped, crag.name);
+      }
+    }
+
     async function worker() {
+      // Each worker keeps its own tempo, so they do not fall into step.
+      const mine = spacing * (0.8 + Math.random() * 0.4);
+
       while (!stop) {
         const i = next++;
         if (i >= crags.length) return;
 
         const crag = crags[i];
         let attempt = 0;
+
+        await waitOutAnyHold(crag);
 
         while (attempt < 3 && !stop) {
           try {
@@ -1027,11 +1064,17 @@
             if (result.error) throw new Error(result.error);
 
             if (result.throttled) {
-              // Back off hard and globally, then retry this crag.
+              // Back off hard and globally, then retry this crag. The hold
+              // applies to every worker, and its length is scattered too — a
+              // pool that all resumes on the same tick just gets refused again.
               attempt++;
               spacing = Math.min(spacing * 2, 8000);
+              holdUntil = Math.max(
+                holdUntil,
+                Date.now() + Math.round(spacing * (2 + Math.random() * 2)),
+              );
               Android.throttled(spacing);
-              await sleep(spacing * 2);
+              await waitOutAnyHold(crag);
               continue;
             }
 
@@ -1060,21 +1103,31 @@
               Android.cragFailed(crag.name, crag.url, String(e).slice(0, 120));
               break;
             }
-            await sleep(spacing * attempt);
+            await jitter(spacing * attempt * 1.5);
           }
         }
 
         done++;
         Android.progress(done + skipped, crags.length + skipped, crag.name);
 
-        await sleep(spacing);
+        await jitter(Math.max(mine, spacing));
+        await breather(spacing);
       }
     }
 
     const pool = [];
     for (let w = 0; w < Math.max(1, workers); w++) {
-      pool.push(worker());
-      await sleep(spacing / Math.max(1, workers));
+      // A worker that throws anywhere outside its own retry loop would reject
+      // the pool and leave the run with no ending at all — the app would sit on
+      // a progress dialog for ever. One dead worker costs its share of the
+      // list, not the import.
+      pool.push(worker().catch((e) => {
+        Android.cragFailed('worker ' + w, '', String(e).slice(0, 120));
+      }));
+
+      // Staggered, and unevenly: starting six workers together means six
+      // requests landing together for the whole run.
+      await jitter(spacing / Math.max(1, workers));
     }
 
     await Promise.all(pool);
