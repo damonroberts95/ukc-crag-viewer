@@ -71,6 +71,7 @@ class MapActivity : AppCompatActivity() {
 
     private val settle = android.os.Handler(android.os.Looper.getMainLooper())
     private val rebuildWhenStill = Runnable { rebuildNow() }
+    private val snapWhenStill = Runnable { snapZoom() }
 
     private val askLocation = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -135,11 +136,12 @@ class MapActivity : AppCompatActivity() {
         }
         binding.map.setMultiTouchControls(true)
 
-        // A pinch leaves the map on a fractional zoom, and a fractional zoom
-        // means every tile is drawn scaled — soft at any distance, which is
-        // what made even a zoomed-out map look blurry. Rounding settles on a
-        // whole level, where a tile is drawn at the size it was made.
-        binding.map.setZoomRounding(true)
+        // Left alone, a pinch settles on a fractional zoom where every tile is
+        // drawn scaled — soft at any distance. osmdroid's own rounding fixes
+        // the softness by jumping to the nearest whole level the instant the
+        // fingers lift, which is sharp and horrible. Instead the snap is
+        // animated once the gesture has actually stopped: see snapZoom().
+        binding.map.setZoomRounding(false)
         binding.map.zoomController.setVisibility(
             org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER
         )
@@ -180,6 +182,9 @@ class MapActivity : AppCompatActivity() {
 
             override fun onZoom(event: org.osmdroid.events.ZoomEvent?): Boolean {
                 rebuild()
+
+                settle.removeCallbacks(snapWhenStill)
+                settle.postDelayed(snapWhenStill, SNAP_WAIT_MS)
                 return false
             }
         })
@@ -290,6 +295,24 @@ class MapActivity : AppCompatActivity() {
             wasTurned = turned
             binding.north.visibility = if (turned) View.VISIBLE else View.GONE
         }
+    }
+
+    /**
+     * Eases the map onto a whole zoom level once the fingers have stopped.
+     *
+     * Tiles are only drawn at their own size on a whole level, so staying on a
+     * fraction leaves the map permanently soft — but jumping there the moment a
+     * pinch ends feels like the map twitching out from under you. A short
+     * animation does the same job and reads as the map settling.
+     */
+    private fun snapZoom() {
+        val zoom = binding.map.zoomLevelDouble
+        val whole = Math.round(zoom).toDouble()
+
+        // Already as good as level: leave it alone rather than animate nothing.
+        if (kotlin.math.abs(zoom - whole) < 0.04) return
+
+        binding.map.controller.zoomTo(whole, SNAP_MS)
     }
 
     /** True once the view has shifted by a third of its own width or height. */
@@ -989,6 +1012,7 @@ class MapActivity : AppCompatActivity() {
 
     override fun onPause() {
         settle.removeCallbacks(rebuildWhenStill)
+        settle.removeCallbacks(snapWhenStill)
         binding.map.onPause()
         super.onPause()
     }
@@ -1008,6 +1032,12 @@ class MapActivity : AppCompatActivity() {
 
         /** How long the map has to sit still before the pins are rebuilt. */
         private const val SETTLE_MS = 140L
+
+        /** Long enough that a pinch is over, short enough not to be noticed. */
+        private const val SNAP_WAIT_MS = 220L
+
+        /** The ease onto a whole zoom level. Slow enough to read as movement. */
+        private const val SNAP_MS = 260L
 
         /** How long typing has to stop before anything is looked up. */
         private const val SUGGEST_MS = 300L
