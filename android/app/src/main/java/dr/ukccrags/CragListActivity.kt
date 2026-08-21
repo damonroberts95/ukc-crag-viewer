@@ -34,10 +34,20 @@ class CragListActivity : AppCompatActivity() {
     private val grades = linkedSetOf<String>()
 
     /** The library, read on arrival rather than on every keystroke. */
-    private var library: List<Crag> = emptyList()
+    private var library: List<CragCard> = emptyList()
 
-    /** Every climb with the crag holding it, so the search box can reach both. */
-    private var climbs: List<Pair<Crag, Climb>> = emptyList()
+    /**
+     * The type/grade pairs the library contains, and nothing else.
+     *
+     * This used to be a list of every climb paired with its crag: with a
+     * four-thousand-crag library that is a couple of hundred thousand objects
+     * held for the sake of two dropdowns and a search, and it was what finally
+     * ran the heap out. The dropdowns only need the distinct combinations,
+     * which is a few hundred, and the search walks the library as a sequence
+     * without building anything.
+     */
+    private var kinds: List<Triple<String, String, Double>> = emptyList()
+    private var typesHeld: List<String> = emptyList()
     private var here: Location? = null
 
     /** True once the sort has been asked for, so a refusal only complains then. */
@@ -112,17 +122,23 @@ class CragListActivity : AppCompatActivity() {
 
         ImportState.watch(whileImporting)
 
+        binding.queueLine.setOnClickListener { toggleQueue() }
+
+        // Crags scraped before the database existed are still JSON files. Moving
+        // them in is a one-off, off the main thread, and the list fills in as it
+        // goes rather than sitting empty until it finishes.
+        Thread {
+            CragStore.open(this)
+            runOnUiThread { if (!isFinishing) refreshFromStore() }
+        }.start()
+
         // Whatever a search left behind gets read while the list is open,
         // a batch at a time. Stopping costs a batch, not the run.
-        QueueDrain.start(this, binding.root) {
-            reload()
-            render()
-            invalidateOptionsMenu()
-        }
+        QueueDrain.start(this, binding.root) { refreshFromStore() }
 
         // Opening the app is the only chance the sync gets: nothing here runs
         // while the app is closed.
-        AutoSync.runIfDue(this, library, binding.root) { added ->
+        AutoSync.runIfDue(this, binding.root) { added ->
             // The sync outlives this screen, so it may land after it is gone.
             if (isFinishing || isDestroyed) return@runIfDue
 
@@ -135,16 +151,39 @@ class CragListActivity : AppCompatActivity() {
         }
     }
 
+    /** Pulls the list, the filters and the queue line back into agreement. */
+    private fun refreshFromStore() {
+        reload()
+        setUpClimbFilters()
+        render()
+        invalidateOptionsMenu()
+    }
+
+    /** Stops or starts the queue, from the line at the top of the list. */
+    private fun toggleQueue() {
+        with(ImportQueue) { queuePaused = !queuePaused }
+
+        if (!with(ImportQueue) { queuePaused }) {
+            QueueDrain.start(this, binding.root) { refreshFromStore() }
+        }
+
+        refreshFromStore()
+    }
+
     /**
      * Reads the library in. Every crag is its own file, so this happens on
      * arrival and on the way back rather than inside render(), which runs on
      * every letter typed into the search box.
      */
     private fun reload() {
-        library = CragStore.load(this)
-        climbs = library.flatMap { crag ->
-            crag.buttresses.flatMap { it.climbs }.map { crag to it }
-        }
+        // Rows, not crags: names, counts and positions straight out of the
+        // index. Nothing here reads a climb.
+        library = CragStore.cards(this)
+        kinds = CragDb.kinds(this)
+        typesHeld = kinds.map { (type, _, _) -> type }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .sorted()
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
@@ -207,7 +246,7 @@ class CragListActivity : AppCompatActivity() {
                 with(ImportQueue) { queuePaused = !queuePaused }
 
                 if (!with(ImportQueue) { queuePaused }) {
-                    QueueDrain.start(this, binding.root) { reload(); render(); invalidateOptionsMenu() }
+                    QueueDrain.start(this, binding.root) { refreshFromStore() }
                 }
 
                 invalidateOptionsMenu()
@@ -288,7 +327,7 @@ class CragListActivity : AppCompatActivity() {
                 val added = ImportQueue.add(this, held, skipHeld = false)
                 with(ImportQueue) { queuePaused = false }
 
-                QueueDrain.start(this, binding.root) { reload(); render(); invalidateOptionsMenu() }
+                QueueDrain.start(this, binding.root) { refreshFromStore() }
                 invalidateOptionsMenu()
 
                 Toast.makeText(
@@ -390,11 +429,7 @@ class CragListActivity : AppCompatActivity() {
         reload()
         setUpClimbFilters()
 
-        QueueDrain.start(this, binding.root) {
-            reload()
-            render()
-            invalidateOptionsMenu()
-        }
+        QueueDrain.start(this, binding.root) { refreshFromStore() }
 
         // Signing in happens in the browser, so re-label the menu on the way back.
         invalidateOptionsMenu()
@@ -410,33 +445,29 @@ class CragListActivity : AppCompatActivity() {
      * climber and the combined list would run to hundreds.
      */
     private fun setUpClimbFilters() {
-        val climbs = this.climbs.map { it.second }
-
-        val types = climbs.map { it.type }.filter { it.isNotBlank() }.distinct().sorted()
-        val typeLabels = listOf(getString(R.string.all_types)) + types
+        val typeLabels = listOf(getString(R.string.all_types)) + typesHeld
 
         binding.type.setSimpleItems(typeLabels.toTypedArray())
         binding.type.setText(if (type.isEmpty()) typeLabels.first() else type, false)
-        binding.typeBox.visibility = if (types.size < 2) View.GONE else View.VISIBLE
+        binding.typeBox.visibility = if (typesHeld.size < 2) View.GONE else View.VISIBLE
 
         binding.type.setOnItemClickListener { _, _, position, _ ->
             type = if (position == 0) "" else typeLabels[position]
             grades.clear()
-            setUpGrades(climbs)
+            setUpGrades()
             render()
         }
 
-        setUpGrades(climbs)
+        setUpGrades()
     }
 
-    private fun setUpGrades(climbs: List<Climb>) {
+    private fun setUpGrades() {
         // Ordered by UKC's own score, so f5 sits below f6A rather than beside it.
-        val offered = climbs
-            .filter { type.isEmpty() || it.type.equals(type, ignoreCase = true) }
-            .filter { it.grade.isNotBlank() }
-            .distinctBy { it.grade }
-            .sortedBy { it.gradeScore }
-            .map { it.grade }
+        val offered = kinds
+            .filter { (kind, _, _) -> type.isEmpty() || kind.equals(type, ignoreCase = true) }
+            .sortedBy { (_, _, score) -> score }
+            .map { (_, grade, _) -> grade }
+            .distinct()
 
         // A type change can strand a grade that no longer exists.
         grades.retainAll(offered.toSet())
@@ -475,20 +506,29 @@ class CragListActivity : AppCompatActivity() {
             .show()
     }
 
+    /** Crag ids holding a wanted climb, asked of the index once per render. */
+    private var holding: Set<String> = emptySet()
+
     /** True when a climb passes the chosen type and grades. */
     private fun wantedClimb(climb: Climb): Boolean =
         (type.isEmpty() || climb.type.equals(type, ignoreCase = true)) &&
             (grades.isEmpty() || grades.any { it.equals(climb.grade, true) })
 
     /** True when the crag holds a climb of the chosen type and any chosen grade. */
-    private fun holdsWanted(crag: Crag): Boolean {
+    private fun holdsWanted(crag: CragCard): Boolean {
         if (type.isEmpty() && grades.isEmpty()) return true
-
-        return crag.buttresses.any { buttress -> buttress.climbs.any(::wantedClimb) }
+        return crag.id in holding
     }
 
     private fun render() {
         ticks = Ticks(this)
+
+        // One query for the whole filter, rather than a walk per crag.
+        holding = if (type.isEmpty() && grades.isEmpty()) {
+            emptySet()
+        } else {
+            CragDb.cragsHolding(this, type, grades)
+        }
 
         val matched = library.filter { crag ->
             (filter.isEmpty() || crag.area.lowercase().contains(filter)) && holdsWanted(crag)
@@ -506,13 +546,12 @@ class CragListActivity : AppCompatActivity() {
         // A search reads climb names too: half-remembering a name is no reason
         // to have to remember which crag it was at. With no search there is
         // nothing to narrow the climbs by, so the list stays the crag library.
+        // A sequence, and capped: a two-letter query against a library this
+        // size otherwise builds tens of thousands of rows nobody scrolls to.
         val found = if (filter.isEmpty()) {
             emptyList()
         } else {
-            climbs.filter { (crag, climb) ->
-                wantedClimb(climb) &&
-                    "${climb.name} ${climb.grade} ${crag.area}".lowercase().contains(filter)
-            }
+            CragDb.searchClimbs(this, filter, type, grades, CLIMB_HITS)
         }
 
         val rows = mutableListOf<Row>()
@@ -531,7 +570,19 @@ class CragListActivity : AppCompatActivity() {
             rows += Row.Label(
                 resources.getQuantityString(R.plurals.climbs, found.size, found.size)
             )
-            found.forEach { (crag, climb) -> rows += Row.ClimbHit(crag, climb) }
+            found.forEach { rows += Row.ClimbRow(it) }
+        }
+
+        // The queue line says what the shade says, so tapping through from the
+        // notification lands on something that agrees with it.
+        val queued = ImportQueue.size(this)
+        val paused = with(ImportQueue) { queuePaused }
+
+        binding.queueLine.visibility = if (queued > 0) View.VISIBLE else View.GONE
+        binding.queueLine.text = when {
+            queued == 0 -> ""
+            paused -> getString(R.string.queue_paused)
+            else -> resources.getQuantityString(R.plurals.crags_left, queued, queued)
         }
 
         binding.empty.setText(if (library.isEmpty()) R.string.no_crags else R.string.no_matches)
@@ -546,24 +597,26 @@ class CragListActivity : AppCompatActivity() {
     /** A row of results: a section label, a crag, or a climb inside one. */
     private sealed interface Row {
         data class Label(val text: String) : Row
-        data class CragHit(val crag: Crag) : Row
-        data class ClimbHit(val crag: Crag, val climb: Climb) : Row
+        data class CragHit(val crag: CragCard) : Row
+        data class ClimbRow(val hit: ClimbHit) : Row
     }
 
-    private fun bindCrag(item: ItemCragBinding, crag: Crag) {
+    private fun bindCrag(item: ItemCragBinding, crag: CragCard) {
         item.name.text = crag.area
         item.detail.text = getString(
             R.string.crag_detail_located,
             resources.getQuantityString(R.plurals.climbs, crag.climbCount, crag.climbCount),
             resources.getQuantityString(
                 R.plurals.buttresses,
-                crag.buttresses.size,
-                crag.buttresses.size,
+                crag.buttressCount,
+                crag.buttressCount,
             ),
             crag.locatedButtresses,
         )
 
-        val ticked = getString(R.string.crag_progress, ticks.countIn(crag), crag.climbCount)
+        val ticked = getString(
+            R.string.crag_progress, ticks.countIn(this, crag.id), crag.climbCount,
+        )
         val metres = crag.metresFrom(here)
 
         item.progress.text = if (metres != null) {
@@ -597,15 +650,15 @@ class CragListActivity : AppCompatActivity() {
         }
     }
 
-    private fun bindClimb(item: ItemFoundBinding, crag: Crag, climb: Climb) {
-        val done = ticks.has(climb.url)
+    private fun bindClimb(item: ItemFoundBinding, hit: ClimbHit) {
+        val done = ticks.has(hit.url)
 
-        item.name.text = climb.name
-        item.grade.text = climb.grade
+        item.name.text = hit.name
+        item.grade.text = hit.grade
         item.meta.text = buildString {
-            append(crag.area)
-            if (climb.type.isNotBlank()) append(" · ").append(climb.type)
-            if (climb.stars > 0) append(" · ").append("★".repeat(climb.stars))
+            append(hit.cragArea)
+            if (hit.type.isNotBlank()) append(" · ").append(hit.type)
+            if (hit.stars > 0) append(" · ").append("★".repeat(hit.stars))
             if (done) append(" · ").append(getString(R.string.ticked))
         }
 
@@ -615,8 +668,8 @@ class CragListActivity : AppCompatActivity() {
         item.root.setOnClickListener {
             startActivity(
                 Intent(this, CragActivity::class.java)
-                    .putExtra(CragActivity.EXTRA_AREA, crag.area)
-                    .putExtra(CragActivity.EXTRA_FIND, climb.name)
+                    .putExtra(CragActivity.EXTRA_AREA, hit.cragArea)
+                    .putExtra(CragActivity.EXTRA_FIND, hit.name)
             )
         }
 
@@ -640,7 +693,7 @@ class CragListActivity : AppCompatActivity() {
         override fun getItemViewType(position: Int): Int = when (rows[position]) {
             is Row.Label -> TYPE_LABEL
             is Row.CragHit -> TYPE_CRAG
-            is Row.ClimbHit -> TYPE_CLIMB
+            is Row.ClimbRow -> TYPE_CLIMB
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
@@ -657,7 +710,7 @@ class CragListActivity : AppCompatActivity() {
             when (val row = rows[position]) {
                 is Row.Label -> (holder as LabelHolder).item.label.text = row.text
                 is Row.CragHit -> bindCrag((holder as CragHolder).item, row.crag)
-                is Row.ClimbHit -> bindClimb((holder as ClimbHolder).item, row.crag, row.climb)
+                is Row.ClimbRow -> bindClimb((holder as ClimbHolder).item, row.hit)
             }
         }
     }
@@ -665,6 +718,9 @@ class CragListActivity : AppCompatActivity() {
     private companion object {
         /** Location is asked for once; a refusal is not re-litigated. */
         const val KEY_ASKED = "asked"
+
+        /** Most climb hits a search will list. Beyond this, refine the words. */
+        const val CLIMB_HITS = 200
 
         const val TYPE_LABEL = 0
         const val TYPE_CRAG = 1

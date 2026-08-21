@@ -57,6 +57,9 @@ automated check; anything user-visible needs a look on the phone.
     `MapActivity` is the osmdroid map.
   - `AutoSync` — weekly logbook read in an unattached WebView, run on opening
     the app only.
+  - `CragDb` — the library in SQLite (crags, buttresses, climbs). Lists, maps
+    and search read columns; only opening a crag parses one. The JSON files
+    under `files/crags/` remain the scraped record and seed the tables.
   - `ImportQueue` / `QueueDrain` — a search queues crag URLs to
     `files/queue.json`; batches of 40 are read in an unattached WebView while
     the app is open, resumable across restarts. Refresh-all uses the same queue.

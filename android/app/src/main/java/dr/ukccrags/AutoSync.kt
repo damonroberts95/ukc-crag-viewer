@@ -49,11 +49,10 @@ object AutoSync {
      */
     fun runIfDue(
         context: Context,
-        crags: List<Crag>,
         host: android.view.ViewGroup?,
         onAdded: (Int) -> Unit,
     ) {
-        if (running || crags.isEmpty() || !Session.signedIn(context)) return
+        if (running || CragStore.count(context) == 0 || !Session.signedIn(context)) return
 
         val last = prefs(context).getLong(KEY_LAST, 0L)
         val since = System.currentTimeMillis() - last
@@ -61,13 +60,12 @@ object AutoSync {
         // A clock knocked backwards would otherwise park the sync in the future.
         if (last != 0L && since in 0 until EVERY_MS) return
 
-        run(context, crags, host, onAdded)
+        run(context, host, onAdded)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun run(
         context: Context,
-        crags: List<Crag>,
         host: android.view.ViewGroup?,
         onAdded: (Int) -> Unit,
     ) {
@@ -107,7 +105,7 @@ object AutoSync {
         val bridge = object {
             @JavascriptInterface
             fun saveTickNames(json: String) {
-                added += Ticks(app).addByName(crags, namedClimbs(json))
+                added += Ticks(app).addByName(app, namedClimbs(json))
             }
 
             @JavascriptInterface

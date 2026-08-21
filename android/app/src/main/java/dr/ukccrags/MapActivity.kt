@@ -41,7 +41,7 @@ class MapActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMapBinding
 
-    private var crags: List<Crag> = emptyList()
+    private var crags: List<CragCard> = emptyList()
     private var single: Crag? = null
 
     private lateinit var overlay: PinOverlay
@@ -94,16 +94,18 @@ class MapActivity : AppCompatActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         binding.toolbar.setNavigationOnClickListener { finish() }
 
-        crags = CragStore.load(this).filter { it.hasPin }
+        crags = CragStore.cards(this).filter { it.hasPin }
 
         // Working out what a crag mostly holds walks all of its climbs. A zoom
         // used to do that for every crag in the library, twice — once for the
         // pins and once for the legend — which is what made a pinch stutter.
         // None of it can change while this screen is open.
-        pinTypes = crags.associate { it.area to it.dominantType() }
+        pinTypes = crags.associate { it.area to it.dominantType }
         pinColours = pinTypes.mapValues { (_, type) -> pinColour(type) }
+        // One crag is read whole — its buttresses and climbs are the screen —
+        // where the library map only ever needs cards and pins.
         single = intent.getStringExtra(EXTRA_AREA)?.let { area ->
-            CragStore.load(this).firstOrNull { it.area == area }
+            CragStore.byArea(this, area)
         }
 
         // The bar holds either a crag's name or the search box, not both: one
@@ -545,34 +547,42 @@ class MapActivity : AppCompatActivity() {
         }
     }
 
-    /** Buttresses of the crags currently in view, the crag pin standing in
-     * where UKC publishes no position for one. */
+    /**
+     * Buttresses of the crags currently in view, the crag pin standing in where
+     * UKC publishes no position for one.
+     *
+     * Asked of the index by bounding box. It used to mean walking every crag in
+     * the library and every buttress of each — thousands of objects to draw the
+     * dozen on screen.
+     */
     private fun onScreenButtressPins(): List<Pin> {
         val box = binding.map.boundingBox
         val margin = 0.02
 
-        val nearby = crags.filter {
-            it.latitude!! in (box.latSouth - margin)..(box.latNorth + margin) &&
-                it.longitude!! in (box.lonWest - margin)..(box.lonEast + margin)
-        }
+        val found = CragDb.pinsWithin(
+            this,
+            box.latSouth - margin,
+            box.latNorth + margin,
+            box.lonWest - margin,
+            box.lonEast + margin,
+        )
 
-        return nearby.flatMap { crag ->
-            crag.buttresses.mapNotNull { buttress ->
-                val latitude = buttress.latitude ?: crag.latitude
-                val longitude = buttress.longitude ?: crag.longitude
-                if (latitude == null || longitude == null) return@mapNotNull null
+        return found.mapNotNull { at ->
+            val home = crags.firstOrNull { it.id == at.cragId }
+            val latitude = at.latitude ?: home?.latitude
+            val longitude = at.longitude ?: home?.longitude
+            if (latitude == null || longitude == null) return@mapNotNull null
 
-                Pin(
-                    label = buttress.name.ifBlank { crag.area },
-                    latitude = latitude,
-                    longitude = longitude,
-                    colour = ContextCompat.getColor(this, R.color.pin_buttress),
-                    kind = PinKind.BUTTRESS,
-                    crag = crag.area,
-                    approximate = !buttress.hasPin,
-                    payload = ButtressAt(crag, buttress),
-                )
-            }
+            Pin(
+                label = at.name.ifBlank { at.cragArea },
+                latitude = latitude,
+                longitude = longitude,
+                colour = ContextCompat.getColor(this, R.color.pin_buttress),
+                kind = PinKind.BUTTRESS,
+                crag = at.cragArea,
+                approximate = at.latitude == null || at.longitude == null,
+                payload = at,
+            )
         }
     }
 
@@ -644,8 +654,9 @@ class MapActivity : AppCompatActivity() {
         sheet.setContentView(view.root)
 
         when (val what = pin.payload) {
-            is Crag -> fillCrag(view, what, pin, sheet)
+            is CragCard -> fillCrag(view, what, pin, sheet)
             is ButtressAt -> fillButtress(view, what, pin, sheet)
+            is ButtressPin -> fillPin(view, what, pin, sheet)
         }
 
         sheet.show()
@@ -653,7 +664,7 @@ class MapActivity : AppCompatActivity() {
 
     private fun fillCrag(
         view: SheetPinBinding,
-        crag: Crag,
+        crag: CragCard,
         pin: Pin,
         sheet: BottomSheetDialog,
     ) {
@@ -665,7 +676,11 @@ class MapActivity : AppCompatActivity() {
             append(resources.getQuantityString(
                 R.plurals.climbs, crag.climbCount, crag.climbCount,
             ))
-            append(" · ").append(getString(R.string.crag_progress, ticks.countIn(crag), crag.climbCount))
+            append(" · ").append(
+                getString(
+                    R.string.crag_progress, ticks.countIn(this@MapActivity, crag.id), crag.climbCount,
+                )
+            )
             if (away != null) append(" · ").append(Units.distance(this@MapActivity, away))
         }
 
@@ -685,11 +700,11 @@ class MapActivity : AppCompatActivity() {
 
         view.walk.setOnClickListener {
             sheet.dismiss()
-            walkTo(crag, pin)
+            walkTo(crag.id, crag.latitude, crag.longitude, pin)
         }
 
-        view.topos.visibility = if (crag.topos.isEmpty()) View.GONE else View.VISIBLE
-        view.topos.text = getString(R.string.topo_count, crag.topos.size)
+        view.topos.visibility = if (crag.topoCount == 0) View.GONE else View.VISIBLE
+        view.topos.text = getString(R.string.topo_count, crag.topoCount)
         view.topos.setOnClickListener {
             sheet.dismiss()
             startActivity(
@@ -697,6 +712,49 @@ class MapActivity : AppCompatActivity() {
                     .putExtra(TopoActivity.EXTRA_AREA, crag.area)
             )
         }
+    }
+
+    /**
+     * A buttress the library map drew from the index. Its crag has not been
+     * read, and does not need to be: the sheet says what it is, opens the crag
+     * filtered to it, and can walk to it.
+     */
+    private fun fillPin(
+        view: SheetPinBinding,
+        at: ButtressPin,
+        pin: Pin,
+        sheet: BottomSheetDialog,
+    ) {
+        val home = crags.firstOrNull { it.id == at.cragId }
+
+        view.name.text = at.name.ifBlank { at.cragArea }
+        view.detail.text = buildString {
+            append(at.cragArea).append(" · ")
+            append(resources.getQuantityString(R.plurals.climbs, at.climbCount, at.climbCount))
+            if (pin.approximate) append(" · ").append(getString(R.string.pin_approximate))
+        }
+
+        view.open.text = getString(R.string.show_these_climbs)
+        view.open.setOnClickListener {
+            sheet.dismiss()
+            startActivity(
+                Intent(this, CragActivity::class.java)
+                    .putExtra(CragActivity.EXTRA_AREA, at.cragArea)
+                    .putExtra(CragActivity.EXTRA_FIND, at.name)
+            )
+        }
+
+        view.directions.setOnClickListener {
+            sheet.dismiss()
+            Maps.open(this, pin.latitude, pin.longitude, at.name.ifBlank { at.cragArea })
+        }
+
+        view.walk.setOnClickListener {
+            sheet.dismiss()
+            walkTo(at.cragId, home?.latitude, home?.longitude, pin)
+        }
+
+        view.topos.visibility = View.GONE
     }
 
     private fun fillButtress(
@@ -737,7 +795,7 @@ class MapActivity : AppCompatActivity() {
 
         view.walk.setOnClickListener {
             sheet.dismiss()
-            walkTo(crag, pin)
+            walkTo(crag.id, crag.latitude, crag.longitude, pin)
         }
 
         view.topos.visibility = View.GONE
@@ -751,7 +809,11 @@ class MapActivity : AppCompatActivity() {
      * with no signal. With no paths within reach the line is straight, and says
      * so rather than pretending.
      */
-    private fun walkTo(crag: Crag, pin: Pin) {
+    /**
+     * A walk needs the crag's id to cache its paths and its pin to fall back
+     * to, and nothing else about it — so it takes those rather than a crag.
+     */
+    private fun walkTo(cragId: String, cragLat: Double?, cragLon: Double?, pin: Pin) {
         val fix = locator?.myLocation ?: Nearby.lastKnown(this)?.let {
             GeoPoint(it.latitude, it.longitude)
         }
@@ -768,10 +830,10 @@ class MapActivity : AppCompatActivity() {
         // Too far to walk from where you are standing, so route the leg that
         // matters: the crag's own pin to the buttress. That is the approach you
         // actually want when planning from home, and it keeps the query small.
-        val distant = away > Walk.MAX_SPAN_METRES && crag.hasPin
+        val distant = away > Walk.MAX_SPAN_METRES && cragLat != null && cragLon != null
 
-        val fromLat = if (distant) crag.latitude!! else fix.latitude
-        val fromLon = if (distant) crag.longitude!! else fix.longitude
+        val fromLat = if (distant) cragLat!! else fix.latitude
+        val fromLon = if (distant) cragLon!! else fix.longitude
 
         note(
             if (distant) getString(R.string.walk_from_crag, Units.distance(this, away.toFloat()))
@@ -779,7 +841,7 @@ class MapActivity : AppCompatActivity() {
         )
 
         Thread {
-            val route = Walk.route(this, crag.id, fromLat, fromLon, pin.latitude, pin.longitude)
+            val route = Walk.route(this, cragId, fromLat, fromLon, pin.latitude, pin.longitude)
 
             runOnUiThread { drawWalk(route, pin, distant) }
         }.start()

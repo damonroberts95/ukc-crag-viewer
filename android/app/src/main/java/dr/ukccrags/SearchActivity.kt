@@ -27,8 +27,8 @@ class SearchActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivitySearchBinding
 
-    private var pool: List<Pair<Crag, Climb>> = emptyList()
-    private var shown: List<Pair<Crag, Climb>> = emptyList()
+    private var pool: List<ClimbHit> = emptyList()
+    private var shown: List<ClimbHit> = emptyList()
 
     private lateinit var ticks: Ticks
 
@@ -53,7 +53,7 @@ class SearchActivity : AppCompatActivity() {
 
         list = found
         supportActionBar?.title = found?.name ?: getString(R.string.ticklists)
-        pool = found?.let { Lists.climbsIn(it, CragStore.load(this)) }.orEmpty()
+        pool = found?.let { Lists.climbsIn(this, it) }.orEmpty()
 
         binding.list.layoutManager = LinearLayoutManager(this)
         binding.query.doAfterTextChanged { render(it?.toString().orEmpty()) }
@@ -126,7 +126,7 @@ class SearchActivity : AppCompatActivity() {
 
         // An import may have filled in crags this list was missing.
         list?.let { current ->
-            pool = Lists.climbsIn(current, CragStore.load(this))
+            pool = Lists.climbsIn(this, current)
             render(binding.query.text?.toString().orEmpty())
         }
     }
@@ -137,8 +137,8 @@ class SearchActivity : AppCompatActivity() {
         shown = if (wanted.isEmpty()) {
             pool
         } else {
-            pool.filter { (crag, climb) ->
-                "${climb.name} ${climb.grade} ${crag.area}".lowercase().contains(wanted)
+            pool.filter { hit ->
+                "${hit.name} ${hit.grade} ${hit.cragArea}".lowercase().contains(wanted)
             }
         }
 
@@ -161,15 +161,15 @@ class SearchActivity : AppCompatActivity() {
         override fun getItemCount(): Int = shown.size
 
         override fun onBindViewHolder(holder: Holder, position: Int) {
-            val (crag, climb) = shown[position]
-            val done = ticks.has(climb.url)
+            val hit = shown[position]
+            val done = ticks.has(hit.url)
 
-            holder.item.name.text = climb.name
-            holder.item.grade.text = climb.grade
+            holder.item.name.text = hit.name
+            holder.item.grade.text = hit.grade
             holder.item.meta.text = buildString {
-                append(crag.area)
-                if (climb.type.isNotBlank()) append(" · ").append(climb.type)
-                if (climb.stars > 0) append(" · ").append("★".repeat(climb.stars))
+                append(hit.cragArea)
+                if (hit.type.isNotBlank()) append(" · ").append(hit.type)
+                if (hit.stars > 0) append(" · ").append("★".repeat(hit.stars))
                 if (done) append(" · ").append(getString(R.string.ticked))
             }
 
@@ -179,8 +179,8 @@ class SearchActivity : AppCompatActivity() {
             holder.item.root.setOnClickListener {
                 startActivity(
                     Intent(this@SearchActivity, CragActivity::class.java)
-                        .putExtra(CragActivity.EXTRA_AREA, crag.area)
-                        .putExtra(CragActivity.EXTRA_FIND, climb.name)
+                        .putExtra(CragActivity.EXTRA_AREA, hit.cragArea)
+                        .putExtra(CragActivity.EXTRA_FIND, hit.name)
                 )
             }
         }

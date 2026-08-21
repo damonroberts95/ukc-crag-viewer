@@ -81,16 +81,14 @@ object Lists {
         return seen.map { it.value to it.key }
     }
 
-    /** The stored crag climbs a list points at, in the list's own order. */
-    fun climbsIn(list: Ticklist, crags: List<Crag>): List<Pair<Crag, Climb>> {
-        val byUrl = HashMap<String, Pair<Crag, Climb>>()
-
-        for (crag in crags) {
-            for (buttress in crag.buttresses) {
-                for (climb in buttress.climbs) byUrl[climb.url] = crag to climb
-            }
-        }
-
-        return list.climbs.mapNotNull { byUrl[it] }
+    /**
+     * The stored climbs a list points at, in the list's own order.
+     *
+     * Asked of the index by URL: a ticklist is a few dozen climbs, and finding
+     * them used to mean holding the whole library to look each one up.
+     */
+    fun climbsIn(context: Context, list: Ticklist): List<ClimbHit> {
+        val held = CragDb.climbsByUrl(context, list.climbs).associateBy { it.url }
+        return list.climbs.mapNotNull { held[it] }
     }
 }

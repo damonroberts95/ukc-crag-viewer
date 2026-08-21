@@ -59,7 +59,7 @@ class CragActivity : AppCompatActivity() {
         binding.toolbar.setNavigationOnClickListener { finish() }
 
         val area = intent.getStringExtra(EXTRA_AREA)
-        val found = CragStore.load(this).firstOrNull { it.area == area }
+        val found = CragStore.byArea(this, area.orEmpty())
 
         if (found == null) {
             finish()
@@ -215,7 +215,7 @@ class CragActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
 
-        CragStore.load(this).firstOrNull { it.area == crag.area }?.let {
+        CragStore.byArea(this, crag.area)?.let {
             crag = it
             setUpTypeFilter()
             showNotes()

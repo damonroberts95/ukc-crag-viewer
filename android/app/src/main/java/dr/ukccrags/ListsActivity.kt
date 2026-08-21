@@ -57,7 +57,6 @@ class ListsActivity : AppCompatActivity() {
 
     private inner class ListAdapter : RecyclerView.Adapter<ListAdapter.Holder>() {
 
-        private val crags = CragStore.load(this@ListsActivity)
         private val ticks = Ticks(this@ListsActivity)
 
         inner class Holder(val item: ItemFoundBinding) : RecyclerView.ViewHolder(item.root)
@@ -69,8 +68,8 @@ class ListsActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: Holder, position: Int) {
             val list = lists[position]
-            val held = Lists.climbsIn(list, crags)
-            val done = held.count { ticks.has(it.second.url) }
+            val held = Lists.climbsIn(this@ListsActivity, list)
+            val done = held.count { ticks.has(it.url) }
 
             holder.item.name.text = list.name
             holder.item.grade.text = "$done/${list.climbs.size}"

@@ -163,7 +163,7 @@ object QueueDrain {
             batch = ImportQueue.next(app, BATCH)
 
             if (batch.isEmpty()) {
-                val held = CragStore.load(app).size
+                val held = CragStore.count(app)
                 AppLog.add(app, "queue: finished, library holds $held crags")
                 ImportProgress.done(
                     app,

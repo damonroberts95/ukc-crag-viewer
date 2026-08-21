@@ -33,7 +33,7 @@ class TopoActivity : AppCompatActivity() {
         binding.toolbar.setNavigationOnClickListener { finish() }
 
         val area = intent.getStringExtra(EXTRA_AREA).orEmpty()
-        crag = CragStore.load(this).firstOrNull { it.area == area } ?: run { finish(); return }
+        crag = CragStore.byArea(this, area) ?: run { finish(); return }
 
         topos = filtered(intent.getStringExtra(EXTRA_FILTER).orEmpty())
         if (topos.isEmpty()) { finish(); return }

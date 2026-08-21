@@ -32,10 +32,12 @@ object ImportProgress {
 
         channel(context)
 
+        // The crag list, not the browser: tapping a progress count to be shown
+        // a UKC login page is not what anybody meant by it.
         val open = PendingIntent.getActivity(
             context,
             0,
-            Intent(context, BrowseActivity::class.java),
+            Intent(context, CragListActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 

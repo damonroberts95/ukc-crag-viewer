@@ -393,7 +393,7 @@ class BrowseActivity : AppCompatActivity() {
 
         val only = intent.getStringExtra(EXTRA_REFRESH_URL)
 
-        val stored = CragStore.load(this)
+        val stored = CragStore.cards(this)
             .let { all -> if (only == null) all else all.filter { it.sourceUrl == only } }
 
         if (stored.isEmpty()) {
@@ -413,7 +413,7 @@ class BrowseActivity : AppCompatActivity() {
         for (crag in stored) {
             list.put(JSONObject().put("name", crag.area).put("url", crag.sourceUrl))
         }
-        stored.forEach { CragStore.forget(this, it) }
+        stored.forEach { card -> CragStore.byId(this, card.id)?.let { CragStore.forget(this, it) } }
 
         showProgress(
             if (only == null) getString(R.string.refresh_crags)
@@ -631,7 +631,7 @@ class BrowseActivity : AppCompatActivity() {
         quietSync = quiet
 
         // A crag page is where UKC exposes the signed-in user id.
-        val crag = CragStore.load(this).firstOrNull()?.sourceUrl.orEmpty()
+        val crag = CragStore.cards(this).firstOrNull()?.sourceUrl.orEmpty()
 
         if (!quiet) showProgress(getString(R.string.sync_ticks))
 
@@ -701,7 +701,7 @@ class BrowseActivity : AppCompatActivity() {
             }.getOrDefault(emptyList())
 
             added = Ticks(this@BrowseActivity)
-                .addByName(CragStore.load(this@BrowseActivity), entries)
+                .addByName(this@BrowseActivity, entries)
         }
 
         /** UKC's wishlist arrives as climb links, so it needs no matching. */

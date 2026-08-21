@@ -101,63 +101,64 @@ private fun JSONObject.arrayFor(vararg keys: String): JSONArray {
     return JSONArray()
 }
 
+/**
+ * Where crags live.
+ *
+ * Two halves, on purpose. The JSON files under `files/crags/` are the record of
+ * what was scraped and are never thrown away — re-reading four thousand pages
+ * to rebuild something derived would be rude to UKC. [CragDb] is the index over
+ * them: it answers the questions a list, a map or a search actually asks
+ * without any of them holding a library in memory.
+ */
 object CragStore {
-
-    private var cache: List<Crag>? = null
 
     private fun storeDir(context: Context): File =
         File(context.filesDir, "crags").apply { mkdirs() }
 
-    fun invalidate() {
-        cache = null
+    /** Kept for callers that still say it; the database needs no invalidating. */
+    fun invalidate() = Unit
+
+    /** Brings any crags scraped before the database existed into it. */
+    fun open(context: Context) {
+        CragDb.migrateIfNeeded(context, storeDir(context))
     }
 
-    fun load(context: Context): List<Crag> {
-        cache?.let { return it }
+    /** Rows for a list or pins for a map: names, counts and positions. */
+    fun cards(context: Context): List<CragCard> = CragDb.cards(context)
 
-        val byId = LinkedHashMap<String, Crag>()
+    fun count(context: Context): Int = CragDb.count(context)
 
-        val assets = context.assets
-        for (name in assets.list("crags").orEmpty().filter { it.endsWith(".json") }) {
-            runCatching {
-                val text = assets.open("crags/$name").bufferedReader().use { it.readText() }
-                parse(JSONObject(text))
-            }.getOrNull()?.let { byId[it.id] = it }
-        }
+    fun has(context: Context, id: String): Boolean = CragDb.has(context, id)
 
-        // Device imports win over anything bundled at build time.
-        for (file in storeDir(context).listFiles().orEmpty().filter { it.extension == "json" }) {
-            runCatching { parse(JSONObject(file.readText())) }
-                .getOrNull()?.let { byId[it.id] = it }
-        }
+    /** One whole crag, climbs and topos and all, parsed on demand. */
+    fun byArea(context: Context, area: String): Crag? =
+        CragDb.fullByArea(context, area)?.let { parseJson(it) }
 
-        val crags = byId.values.sortedBy { it.area.lowercase() }
-        cache = crags
-        return crags
-    }
+    fun byId(context: Context, id: String): Crag? =
+        CragDb.full(context, id)?.let { parseJson(it) }
 
-    fun has(context: Context, id: String): Boolean =
-        File(storeDir(context), "$id.json").exists()
+    fun parseJson(json: String): Crag? = runCatching { parse(JSONObject(json)) }.getOrNull()
 
     /** Deletes every imported crag and its cached topo photos. Ticks survive. */
     fun clear(context: Context) {
         storeDir(context).listFiles().orEmpty().forEach { it.delete() }
+        CragDb.clear(context)
         TopoCache.clear(context)
-        invalidate()
     }
 
     /** Drops one crag and its topo photos, so a refresh starts from nothing. */
     fun forget(context: Context, crag: Crag) {
         File(storeDir(context), "${crag.id}.json").delete()
         crag.topos.forEach { TopoCache.file(context, it.topoId.toString()).delete() }
-        invalidate()
+        CragDb.forget(context, crag.id)
     }
 
     /** Returns the crag it stored, or null when the JSON made no sense. */
     fun save(context: Context, json: String): Crag? = runCatching {
         val crag = parse(JSONObject(json))
+
         File(storeDir(context), "${crag.id}.json").writeText(json)
-        invalidate()
+        CragDb.put(context, crag, json)
         crag
     }.getOrNull()
 
@@ -312,6 +313,13 @@ class Ticks(context: Context) {
     fun countIn(crag: Crag): Int =
         crag.buttresses.sumOf { buttress -> buttress.climbs.count { has(it.url) } }
 
+    /**
+     * The same count for a crag nobody has read yet: its climb URLs come from
+     * the index rather than from parsing the crag.
+     */
+    fun countIn(context: Context, cragId: String): Int =
+        CragDb.climbUrls(context, cragId).count { has(it) }
+
     /** Folds in a logbook sync, keeping what earlier syncs already found. */
     fun addAll(urls: Collection<String>): Int {
         val added = urls.count { ticked.add(it) }
@@ -325,14 +333,13 @@ class Ticks(context: Context) {
      * and punctuation, since a logbook entry and a crag page do not always
      * agree on an apostrophe.
      */
-    fun addByName(crags: List<Crag>, entries: List<Pair<String, String>>): Int {
+    fun addByName(context: Context, entries: List<Pair<String, String>>): Int {
         val byCrag = HashMap<String, HashMap<String, String>>()
 
-        for (crag in crags) {
-            val climbs = byCrag.getOrPut(loosen(crag.area)) { HashMap() }
-            for (buttress in crag.buttresses) {
-                for (climb in buttress.climbs) climbs[loosen(climb.name)] = climb.url
-            }
+        // Crag name, climb name and URL for the whole library — three strings a
+        // climb, rather than every climb object.
+        for ((area, name, url) in CragDb.climbUrlsByName(context)) {
+            byCrag.getOrPut(loosen(area)) { HashMap() }[loosen(name)] = url
         }
 
         val found = mutableListOf<String>()
