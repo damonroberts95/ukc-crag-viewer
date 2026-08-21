@@ -43,6 +43,8 @@ data class ButtressPin(
     val latitude: Double?,
     val longitude: Double?,
     val climbCount: Int,
+    /** True when this is really the crag's pin, UKC having published none. */
+    val approximate: Boolean = false,
 )
 
 /** A climb found by a search, with the crag it is at. */
@@ -278,7 +280,19 @@ object CragDb {
             if (it.moveToFirst()) it.getString(0) else null
         }
 
-    /** Buttress pins inside a box, for the map's detailed mode. */
+    /**
+     * Buttress pins inside a box, for the map's detailed mode.
+     *
+     * The bounds go into the SQL rather than into bound parameters on purpose:
+     * `rawQuery` binds every argument as text, and SQLite does not compare text
+     * to a REAL column numerically — so a box passed as parameters matched
+     * nothing at all, and every buttress pin vanished the moment the map zoomed
+     * in far enough to want them. They are doubles, so there is nothing to
+     * escape.
+     *
+     * The coordinates come back coalesced with the crag's own, so a buttress
+     * UKC never placed still arrives somewhere.
+     */
     fun pinsWithin(
         context: Context,
         south: Double,
@@ -287,12 +301,14 @@ object CragDb {
         east: Double,
     ): List<ButtressPin> = db(context).rawQuery(
         """
-        SELECT b.crag_id, c.area, b.name, b.latitude, b.longitude, b.climb_count
+        SELECT b.crag_id, c.area, b.name,
+               COALESCE(b.latitude, c.latitude), COALESCE(b.longitude, c.longitude),
+               b.climb_count, b.latitude IS NULL OR b.longitude IS NULL
         FROM buttresses b JOIN crags c ON c.id = b.crag_id
-        WHERE COALESCE(b.latitude, c.latitude) BETWEEN ? AND ?
-          AND COALESCE(b.longitude, c.longitude) BETWEEN ? AND ?
+        WHERE COALESCE(b.latitude, c.latitude) BETWEEN $south AND $north
+          AND COALESCE(b.longitude, c.longitude) BETWEEN $west AND $east
         """.trimIndent(),
-        arrayOf(south.toString(), north.toString(), west.toString(), east.toString()),
+        null,
     ).use { cursor ->
         buildList {
             while (cursor.moveToNext()) {
@@ -304,6 +320,7 @@ object CragDb {
                         latitude = if (cursor.isNull(3)) null else cursor.getDouble(3),
                         longitude = if (cursor.isNull(4)) null else cursor.getDouble(4),
                         climbCount = cursor.getInt(5),
+                        approximate = cursor.getInt(6) == 1,
                     )
                 )
             }

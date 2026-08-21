@@ -568,10 +568,8 @@ class MapActivity : AppCompatActivity() {
         )
 
         return found.mapNotNull { at ->
-            val home = crags.firstOrNull { it.id == at.cragId }
-            val latitude = at.latitude ?: home?.latitude
-            val longitude = at.longitude ?: home?.longitude
-            if (latitude == null || longitude == null) return@mapNotNull null
+            val latitude = at.latitude ?: return@mapNotNull null
+            val longitude = at.longitude ?: return@mapNotNull null
 
             Pin(
                 label = at.name.ifBlank { at.cragArea },
@@ -580,7 +578,7 @@ class MapActivity : AppCompatActivity() {
                 colour = ContextCompat.getColor(this, R.color.pin_buttress),
                 kind = PinKind.BUTTRESS,
                 crag = at.cragArea,
-                approximate = at.latitude == null || at.longitude == null,
+                approximate = at.approximate,
                 payload = at,
             )
         }

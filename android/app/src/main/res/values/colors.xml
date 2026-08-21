@@ -20,7 +20,11 @@
     <color name="walk_line">#FF6D00</color>
     <color name="walk_casing">#1A1A1A</color>
     <color name="here_dot">#1565C0</color>
-    <!-- Ground under the map where no tile is cached: quiet, not a grey grid. -->
-    <color name="map_empty">#20241D</color>
-    <color name="map_empty_line">#2C3127</color>
+    <!--
+      Ground under the map where a tile has not arrived yet. Pale on purpose:
+      dark read as the whole map flashing black on every zoom, and OSM's own
+      tiles are light, so this is what a missing one should look like.
+    -->
+    <color name="map_empty">#F1EFE9</color>
+    <color name="map_empty_line">#E2DFD6</color>
 </resources>
