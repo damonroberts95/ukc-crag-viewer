@@ -46,11 +46,17 @@ object QueueDrain {
     /** How many times a crag may fail before it is given up on. */
     private const val RETRIES = 1
 
+    /** How long to leave a broken connection before trying it again. */
+    private const val RETRY_MS = 60_000L
+
     private const val DELAY_MS = 250
     private const val WORKERS = 6
 
     /** One drain at a time, however many screens ask for one. */
     private var running = false
+
+    /** Waiting to try again after something went wrong out on the network. */
+    private val later = Handler(Looper.getMainLooper())
 
     fun busy(): Boolean = running
 
@@ -61,6 +67,8 @@ object QueueDrain {
      */
     @SuppressLint("SetJavaScriptEnabled")
     fun start(context: Context, host: android.view.ViewGroup?, onBatch: () -> Unit = {}) {
+        later.removeCallbacksAndMessages(null)
+
         // Every reason for not starting is worth saying: "nothing is
         // happening" is the hardest thing to diagnose after the fact.
         with(ImportQueue) {
@@ -109,6 +117,21 @@ object QueueDrain {
 
         /** Crags this batch could not read, by URL. */
         val unread = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+        /**
+         * Tries again shortly, rather than waiting for the app to be opened
+         * afresh. A connection comes back — a VPN switched off, a tunnel
+         * ending — and there is no reason to make the reader do anything about
+         * it. Only while the screen that hosts it is still there; otherwise
+         * the next opening will start one.
+         */
+        fun tryAgainLater(why: String) {
+            AppLog.add(app, "queue: $why — trying again in a minute")
+
+            later.postDelayed({
+                if (host == null || host.isAttachedToWindow) start(context, host, onBatch)
+            }, RETRY_MS)
+        }
 
         fun stop() {
             running = false
@@ -177,8 +200,8 @@ object QueueDrain {
             // would decline to start. Give it a ceiling and say so.
             handler.removeCallbacksAndMessages(null)
             handler.postDelayed({
-                AppLog.add(app, "queue: STOPPED — batch went quiet, will start again later")
                 stop()
+                tryAgainLater("batch went quiet")
             }, BATCH_TIMEOUT_MS)
 
             web.evaluateJavascript(
@@ -238,8 +261,10 @@ object QueueDrain {
 
             @JavascriptInterface
             fun failed(reason: String) {
-                AppLog.add(app, "queue: STOPPED — $reason")
-                handler.post { stop() }
+                handler.post {
+                    stop()
+                    tryAgainLater("batch failed — $reason")
+                }
             }
 
             @JavascriptInterface
@@ -301,8 +326,10 @@ object QueueDrain {
                 // Only the main page matters; a missing image is not a failure.
                 if (request?.isForMainFrame != true) return
 
-                AppLog.add(app, "queue: could not open UKC — ${error?.description}")
-                handler.post { stop() }
+                handler.post {
+                    stop()
+                    tryAgainLater("could not open UKC — ${error?.description}")
+                }
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
