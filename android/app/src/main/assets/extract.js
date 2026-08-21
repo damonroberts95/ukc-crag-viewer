@@ -1051,7 +1051,7 @@
   async function importAll(crags, skipped, delayMs, workers) {
     if (!crags.length) { Android.finished(skipped, 0); return; }
 
-    let next = 0, ok = 0, bad = 0, done = 0;
+    let next = 0, ok = 0, bad = 0, done = 0, empty = 0;
     let spacing = delayMs;
     let stop = false;
 
@@ -1109,7 +1109,9 @@
             }
 
             if (result.empty) {
-              // Nothing to store, but nothing went wrong either.
+              // Nothing to store, but nothing went wrong either: a crag whose
+              // only entries are summits is a trig point, not climbing.
+              empty++;
               break;
             }
 
@@ -1161,6 +1163,10 @@
     }
 
     await Promise.all(pool);
+
+    // Said separately rather than as another argument to finished(), which
+    // every host would have to grow a parameter for at the same moment.
+    if (empty && typeof Android.emptyCrags === 'function') Android.emptyCrags(empty);
 
     Android.finished(ok + skipped, bad);
   }

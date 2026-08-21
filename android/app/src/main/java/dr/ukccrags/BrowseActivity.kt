@@ -808,6 +808,12 @@ class BrowseActivity : AppCompatActivity() {
             }
         }
 
+        /** Crags with nothing worth storing: summits, mostly. */
+        @JavascriptInterface
+        fun emptyCrags(count: Int) {
+            AppLog.add(this@BrowseActivity, "import: $count had nothing to store")
+        }
+
         /** Records why a crag didn't import, so the run can name it at the end. */
         @JavascriptInterface
         fun cragFailed(name: String, url: String, reason: String) {

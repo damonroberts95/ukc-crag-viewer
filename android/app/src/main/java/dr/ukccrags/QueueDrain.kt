@@ -284,6 +284,12 @@ object QueueDrain {
                 }
             }
 
+            /** Crags with nothing worth storing: summits, mostly. */
+            @JavascriptInterface
+            fun emptyCrags(count: Int) {
+                AppLog.add(app, "queue: $count had nothing to store — summits, not climbs")
+            }
+
             @JavascriptInterface
             fun cragFailed(name: String, url: String, reason: String) {
                 AppLog.add(app, "queue: could not read $name — $reason")
