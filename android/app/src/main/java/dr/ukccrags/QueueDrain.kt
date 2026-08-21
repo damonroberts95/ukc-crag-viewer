@@ -25,6 +25,11 @@ import android.webkit.WebViewClient
  * Not a foreground service: this runs while the app is open, and stops being
  * given time shortly after it is not. That is the trade for not holding a
  * notification the reader cannot dismiss.
+ *
+ * The WebView has to be **in the window**, even though nobody looks at it: a
+ * WebView that was never attached does not reliably finish loading a page, and
+ * the drain then sits waiting for a page load that never completes. So it goes
+ * in as a one-pixel view and comes out again when the reading stops.
  */
 object QueueDrain {
 
@@ -52,7 +57,7 @@ object QueueDrain {
      * can show what arrived.
      */
     @SuppressLint("SetJavaScriptEnabled")
-    fun start(context: Context, onBatch: () -> Unit = {}) {
+    fun start(context: Context, host: android.view.ViewGroup?, onBatch: () -> Unit = {}) {
         // Every reason for not starting is worth saying: "nothing is
         // happening" is the hardest thing to diagnose after the fact.
         with(ImportQueue) {
@@ -82,7 +87,13 @@ object QueueDrain {
         ImportState.running = true
 
         val handler = Handler(Looper.getMainLooper())
-        val web = WebView(app)
+
+        // Built against the screen that hosts it, not the application, since it
+        // is about to be added to that screen's window.
+        val web = WebView(host?.context ?: app)
+
+        host?.addView(web, android.view.ViewGroup.LayoutParams(1, 1))
+        web.alpha = 0f
 
         var batch: List<Queued> = emptyList()
         var ready = false
@@ -97,6 +108,7 @@ object QueueDrain {
             running = false
             ImportState.running = false
             handler.removeCallbacksAndMessages(null)
+            host?.removeView(web)
             web.destroy()
             ImportProgress.clear(app)
         }
@@ -132,6 +144,7 @@ object QueueDrain {
                 running = false
                 ImportState.running = false
                 handler.removeCallbacksAndMessages(null)
+                host?.removeView(web)
                 web.destroy()
                 handler.post { onBatch() }
                 return

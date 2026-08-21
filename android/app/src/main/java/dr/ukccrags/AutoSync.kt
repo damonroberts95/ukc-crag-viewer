@@ -47,7 +47,12 @@ object AutoSync {
      * against. [onAdded] runs on the main thread, only when ticks actually
      * arrived, so the screen can redraw itself.
      */
-    fun runIfDue(context: Context, crags: List<Crag>, onAdded: (Int) -> Unit) {
+    fun runIfDue(
+        context: Context,
+        crags: List<Crag>,
+        host: android.view.ViewGroup?,
+        onAdded: (Int) -> Unit,
+    ) {
         if (running || crags.isEmpty() || !Session.signedIn(context)) return
 
         val last = prefs(context).getLong(KEY_LAST, 0L)
@@ -56,11 +61,16 @@ object AutoSync {
         // A clock knocked backwards would otherwise park the sync in the future.
         if (last != 0L && since in 0 until EVERY_MS) return
 
-        run(context, crags, onAdded)
+        run(context, crags, host, onAdded)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun run(context: Context, crags: List<Crag>, onAdded: (Int) -> Unit) {
+    private fun run(
+        context: Context,
+        crags: List<Crag>,
+        host: android.view.ViewGroup?,
+        onAdded: (Int) -> Unit,
+    ) {
         val app = context.applicationContext
         val script = runCatching {
             app.assets.open("extract.js").bufferedReader().use { it.readText() }
@@ -68,7 +78,13 @@ object AutoSync {
 
         running = true
 
-        val web = WebView(app)
+        // In the window, not floating free: a WebView that was never attached
+        // does not reliably finish loading a page, and this one would then wait
+        // for a load that never lands.
+        val web = WebView(host?.context ?: app)
+
+        host?.addView(web, android.view.ViewGroup.LayoutParams(1, 1))
+        web.alpha = 0f
         val handler = Handler(Looper.getMainLooper())
         var added = 0
         var settled = false
@@ -79,6 +95,7 @@ object AutoSync {
             running = false
 
             handler.removeCallbacksAndMessages(null)
+            host?.removeView(web)
             web.destroy()
 
             // A failed run is not stamped, so the next opening tries again.

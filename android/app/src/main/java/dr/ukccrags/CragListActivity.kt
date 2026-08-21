@@ -114,7 +114,7 @@ class CragListActivity : AppCompatActivity() {
 
         // Whatever a search left behind gets read while the list is open,
         // a batch at a time. Stopping costs a batch, not the run.
-        QueueDrain.start(this) {
+        QueueDrain.start(this, binding.root) {
             reload()
             render()
             invalidateOptionsMenu()
@@ -122,7 +122,7 @@ class CragListActivity : AppCompatActivity() {
 
         // Opening the app is the only chance the sync gets: nothing here runs
         // while the app is closed.
-        AutoSync.runIfDue(this, library) { added ->
+        AutoSync.runIfDue(this, library, binding.root) { added ->
             // The sync outlives this screen, so it may land after it is gone.
             if (isFinishing || isDestroyed) return@runIfDue
 
@@ -207,7 +207,7 @@ class CragListActivity : AppCompatActivity() {
                 with(ImportQueue) { queuePaused = !queuePaused }
 
                 if (!with(ImportQueue) { queuePaused }) {
-                    QueueDrain.start(this) { reload(); render(); invalidateOptionsMenu() }
+                    QueueDrain.start(this, binding.root) { reload(); render(); invalidateOptionsMenu() }
                 }
 
                 invalidateOptionsMenu()
@@ -288,7 +288,7 @@ class CragListActivity : AppCompatActivity() {
                 val added = ImportQueue.add(this, held, skipHeld = false)
                 with(ImportQueue) { queuePaused = false }
 
-                QueueDrain.start(this) { reload(); render(); invalidateOptionsMenu() }
+                QueueDrain.start(this, binding.root) { reload(); render(); invalidateOptionsMenu() }
                 invalidateOptionsMenu()
 
                 Toast.makeText(
@@ -390,7 +390,7 @@ class CragListActivity : AppCompatActivity() {
         reload()
         setUpClimbFilters()
 
-        QueueDrain.start(this) {
+        QueueDrain.start(this, binding.root) {
             reload()
             render()
             invalidateOptionsMenu()
