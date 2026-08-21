@@ -917,7 +917,18 @@ class MapActivity : AppCompatActivity() {
         val tiles = MapSources.tileSource(id)
 
         binding.map.tileProvider?.detach()
-        binding.map.setTileProvider(org.osmdroid.tileprovider.MapTileProviderBasic(this))
+
+        val provider = org.osmdroid.tileprovider.MapTileProviderBasic(this)
+
+        // Cache and approximation before the network. osmdroid can fill a tile
+        // it has not got by scaling the parent tile it has, which is a soft
+        // version of the right picture — but only if it is asked before the
+        // download rather than after it. That turns every zoom from a flash of
+        // empty ground into a blurred version of what is already there,
+        // sharpening as the real tiles land.
+        provider.setOfflineFirst(true)
+
+        binding.map.setTileProvider(provider)
         binding.map.setTileSource(tiles)
 
         // Every source runs out of data somewhere — 14 for Sentinel-2, 20 for
