@@ -274,6 +274,9 @@
   // A crag page builds its table in ~200ms; anything slower is a dud page.
   const LOAD_TIMEOUT_MS = 4000;
 
+  /** The most any one crag may take, whichever way it is being read. */
+  const CRAG_TIMEOUT_MS = 20000;
+
   /** Cloudflare and UKC both answer a throttle with these. */
   function isThrottled(html) {
     return /just a moment|checking your browser|verify you are human|too many requests/i
@@ -687,12 +690,31 @@
     }
   }
 
+  /**
+   * A fetch that cannot hang.
+   *
+   * Without this a dropped connection — a VPN turning over, a train tunnel —
+   * left the promise unsettled for ever. Six workers each holding one is a run
+   * that has stopped without failing, which is exactly what it looked like: no
+   * error, no progress, nothing in the log.
+   */
+  async function fetchWithin(url, timeoutMs) {
+    const control = new AbortController();
+    const guard = setTimeout(() => control.abort(), timeoutMs);
+
+    try {
+      return await fetch(url, { credentials: 'include', signal: control.signal });
+    } finally {
+      clearTimeout(guard);
+    }
+  }
+
   /** Loads one crag and turns it into an export, or explains why it could not. */
   async function loadCrag(url, timeoutMs) {
     // A plain fetch usually carries the payload and costs far less than a
     // navigation, so try it first and keep the iframe as the fallback.
     try {
-      const response = await fetch(url, { credentials: 'include' });
+      const response = await fetchWithin(url, timeoutMs);
       const html = await response.text();
 
       if (isThrottled(html)) return { throttled: true };
@@ -1059,7 +1081,13 @@
 
         while (attempt < 3 && !stop) {
           try {
-            const result = await loadCrag(crag.url, LOAD_TIMEOUT_MS);
+            // Even with both routes guarded, nothing may settle — parsing a
+            // huge page, a wedged iframe. A crag is worth a few seconds, not a
+            // whole run.
+            const result = await Promise.race([
+              loadCrag(crag.url, LOAD_TIMEOUT_MS),
+              sleep(CRAG_TIMEOUT_MS).then(() => ({ error: 'gave up waiting' })),
+            ]);
 
             if (result.error) throw new Error(result.error);
 

@@ -31,6 +31,13 @@ object QueueDrain {
     /** Small on purpose: a batch is the most that a kill can cost. */
     private const val BATCH = 40
 
+    /**
+     * Longest a batch may go without reporting. Forty crags at a quarter of a
+     * second each is seconds, not minutes, even with a throttle hold — so this
+     * is generous and still catches a wedged run.
+     */
+    private const val BATCH_TIMEOUT_MS = 120_000L
+
     private const val DELAY_MS = 250
     private const val WORKERS = 6
 
@@ -143,6 +150,17 @@ object QueueDrain {
                 planned,
             )
 
+            AppLog.add(app, "queue: reading a batch of ${batch.size}, $leftAtBatch left")
+
+            // If a batch never reports back, the drain would sit "already
+            // reading" for the rest of the session and every later attempt
+            // would decline to start. Give it a ceiling and say so.
+            handler.removeCallbacksAndMessages(null)
+            handler.postDelayed({
+                AppLog.add(app, "queue: STOPPED — batch went quiet, will start again later")
+                stop()
+            }, BATCH_TIMEOUT_MS)
+
             web.evaluateJavascript(
                 "window.__ukcRefreshCrags(" +
                     "${org.json.JSONObject.quote(ImportQueue.asJson(batch))}, $DELAY_MS, $WORKERS)",
@@ -244,6 +262,18 @@ object QueueDrain {
         web.addJavascriptInterface(bridge, "Android")
 
         web.webViewClient = object : WebViewClient() {
+            override fun onReceivedError(
+                view: WebView?,
+                request: android.webkit.WebResourceRequest?,
+                error: android.webkit.WebResourceError?,
+            ) {
+                // Only the main page matters; a missing image is not a failure.
+                if (request?.isForMainFrame != true) return
+
+                AppLog.add(app, "queue: could not open UKC — ${error?.description}")
+                handler.post { stop() }
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 if (ready) return
                 ready = true

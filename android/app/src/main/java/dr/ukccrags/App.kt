@@ -23,6 +23,11 @@ class App : Application() {
         super.onCreate()
         DynamicColors.applyToActivitiesIfAvailable(this)
 
+        // Nothing can be running in a process that has only just started, so
+        // any progress notification still in the shade is a leftover — from a
+        // run that was killed, or from the app being replaced under it.
+        ImportProgress.clear(this)
+
         // OpenStreetMap refuses requests without a real user agent, and the
         // tile cache belongs in the app's own storage rather than shared space.
         Configuration.getInstance().apply {
