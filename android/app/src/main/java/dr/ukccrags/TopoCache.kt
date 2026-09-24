@@ -38,6 +38,8 @@ object TopoCache {
         dir(context).listFiles().orEmpty().forEach { it.delete() }
     }
 
+    fun bytes(context: Context): Long = dir(context).listFiles().orEmpty().sumOf { it.length() }
+
     /** Longest edge kept, which holds a topo to a few hundred KB. */
     private const val MAX_EDGE = 1600
 
@@ -70,13 +72,23 @@ object TopoCache {
      * Downloads a topo photo. The link is signed and short-lived, so this has
      * to happen while the import still holds it. Blocking; the JavaScript
      * bridge calls it off the UI thread.
-     *
      */
     fun download(
         context: Context,
         topoId: String,
         url: String,
-    ): Boolean = runCatching {
+    ): Boolean = saveImage(context, url, file(context, topoId), MAX_EDGE).also {
+        if (!it) Log.w("UKC", "topo $topoId download failed")
+    }
+
+    /**
+     * Fetches a picture from UKC's image host with the session's cookies and
+     * writes it to [target] as a JPEG no longer than [maxEdge] on its long
+     * side. Shared with [PhotoCache], whose links are signed the same way.
+     * The photo is kept exactly as UKC stores it: topo line coordinates are
+     * the rotated ones, and TopoView undoes that as it draws.
+     */
+    fun saveImage(context: Context, url: String, target: File, maxEdge: Int): Boolean = runCatching {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15000
             readTimeout = 30000
@@ -97,17 +109,14 @@ object TopoCache {
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
 
         var sample = 1
-        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > MAX_EDGE) sample *= 2
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxEdge) sample *= 2
 
-        var bitmap = BitmapFactory.decodeByteArray(
+        val bitmap = BitmapFactory.decodeByteArray(
             bytes, 0, bytes.size,
             BitmapFactory.Options().apply { inSampleSize = sample },
         ) ?: return@runCatching false
 
-        // The photo is kept exactly as UKC stores it. The line coordinates
-        // are the rotated ones, and TopoView undoes that as it draws.
-
-        val target = file(context, topoId)
+        target.parentFile?.mkdirs()
         val partial = File(target.path + ".part")
 
         partial.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 82, it) }
@@ -116,10 +125,9 @@ object TopoCache {
 
         target.exists()
     }.getOrElse {
-        Log.w("UKC", "topo $topoId download failed: $it")
+        Log.w("UKC", "image download failed: $it")
         false
     }
-
 
     /** Reads a cached photo, downscaled to roughly [maxEdge] on its long side. */
     fun load(context: Context, topo: Topo, maxEdge: Int = 2048): Bitmap? {

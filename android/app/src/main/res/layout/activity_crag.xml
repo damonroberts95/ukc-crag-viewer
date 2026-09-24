@@ -34,6 +34,33 @@
 
         </LinearLayout>
 
+        <!-- Only while this crag's photos are being saved. Tap to stop. -->
+        <LinearLayout
+            android:id="@+id/photoBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?attr/selectableItemBackground">
+
+            <TextView
+                android:id="@+id/photoStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="13sp"
+                android:textColor="?attr/colorPrimary" />
+
+            <com.google.android.material.progressindicator.LinearProgressIndicator
+                android:id="@+id/photoBar"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" />
+
+        </LinearLayout>
+
         <!-- UKC's own crag notes, cut to three lines; tap for the rest. -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/notesCard"
@@ -150,14 +177,33 @@
 
     </FrameLayout>
 
-    <com.google.android.material.button.MaterialButton
-        android:id="@+id/topos"
-        style="@style/Widget.Material3.Button.TonalButton"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginHorizontal="12dp"
-        android:visibility="gone"
-        android:text="@string/topos" />
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/topos"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:visibility="gone"
+            android:text="@string/topos" />
+
+        <!-- Saved photos of the crag itself; a climb's own are in its dialog. -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/photos"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:visibility="gone"
+            android:text="@string/photos" />
+
+    </LinearLayout>
 
     <TextView
         android:id="@+id/source"

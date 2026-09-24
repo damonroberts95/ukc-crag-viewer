@@ -122,6 +122,10 @@ class CragListActivity : AppCompatActivity() {
 
         ImportState.watch(whileImporting)
 
+        // Once: the import is a search by place and distance, which nobody
+        // guesses from a button that says "Add crags".
+        Guide.showOnce(this)
+
         // A tap is impatience, not a stop: it starts the reading now rather
         // than waiting for the next batch or the next time the app is opened.
         // Pausing is the long press, and the overflow entry.
@@ -299,12 +303,8 @@ class CragListActivity : AppCompatActivity() {
                 Maps.openUrl(this, getString(R.string.crag_index_url))
                 return true
             }
-            R.id.log -> {
-                startActivity(Intent(this, LogActivity::class.java))
-                return true
-            }
-            R.id.updates -> {
-                Updates.check(this)
+            R.id.settings -> {
+                startActivity(Intent(this, SettingsActivity::class.java))
                 return true
             }
         }

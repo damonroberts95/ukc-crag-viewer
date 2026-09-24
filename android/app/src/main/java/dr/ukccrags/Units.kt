@@ -15,6 +15,11 @@ object Units {
     private val MILES = setOf("GB", "US", "LR", "MM")
 
     private fun usesMiles(context: Context): Boolean {
+        when (Settings.units(context)) {
+            Settings.UNITS_MILES -> return true
+            Settings.UNITS_KM -> return false
+        }
+
         val locales = context.resources.configuration.locales
         val country = if (locales.isEmpty) Locale.getDefault().country
         else locales[0].country

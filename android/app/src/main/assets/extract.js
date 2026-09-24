@@ -93,6 +93,25 @@
     return out;
   }
 
+  /*
+   * Parking sits beside the buttress pins in the same script, and in the same
+   * shape: `parks = [[lat, lng, "name"], ...]`. Most crags have one; big ones
+   * have several, each named for the end of the crag it serves.
+   */
+  function parseParks(html) {
+    const list = literal(html, 'parks', '[');
+    if (!Array.isArray(list)) return [];
+
+    return list
+      .filter((item) => Array.isArray(item) && item.length >= 2 &&
+        typeof item[0] === 'number' && typeof item[1] === 'number')
+      .map((item) => ({
+        name: text(item[2]),
+        latitude: item[0],
+        longitude: item[1],
+      }));
+  }
+
   function findRoutesTable(doc) {
     for (const table of doc.querySelectorAll('table')) {
       for (const row of table.querySelectorAll('tr')) {
@@ -190,6 +209,7 @@
       longitude: lon ? parseFloat(lon.content) : null,
       route_count: count,
       sectors,
+      parking: parseParks(html),
     };
   }
 
@@ -420,6 +440,9 @@
       // Comments first: UKC hides the "More..." control in one, and it holds
       // markup, so stripping tags alone leaves "More...-->" behind.
       .replace(/<!--[\s\S]*?-->/g, ' ')
+      // Before the tags go: a link's address lives only in its href, so
+      // "descriptions here" used to keep "here" and lose the PDF it pointed at.
+      .replace(/<a\b[^>]*?\bhref\s*=\s*["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi, link)
       .replace(/<br\s*\/?>/gi, '\n')
       .replace(/<\/(?:p|div|li)>/gi, '\n\n')
       .replace(/<[^>]*>/g, ' ')
@@ -427,6 +450,25 @@
       .replace(/ *\n */g, '\n')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+  }
+
+  /*
+   * A link as plain text the app can make clickable again. Link text that is
+   * itself an address is often cut short with an ellipsis, so the real address
+   * replaces it; anything else keeps its words with the address after them.
+   * Only web links survive: "#", mailto: and javascript: have nowhere to go.
+   */
+  function link(match, href, inner) {
+    const label = clean(inner.replace(/<[^>]*>/g, ''));
+    let url = clean(href);
+
+    if (url.startsWith('//')) url = 'https:' + url;
+    else if (url.startsWith('/')) url = ORIGIN + url;
+
+    if (!/^https?:\/\//i.test(url)) return label;
+    if (!label || /^(?:https?:\/\/|www\.)/i.test(label)) return ' ' + url + ' ';
+
+    return label + ' (' + url + ')';
   }
 
   /*
@@ -588,6 +630,7 @@
       route_count: climbing.length,
       description: cragNotes(html),
       sectors: buttresses,
+      parking: parseParks(html),
       topos,
     };
   }
@@ -1041,6 +1084,164 @@
       Android.ticksDone(urls.length);
     } catch (e) {
       Android.ticksFailed(String(e).slice(0, 120));
+    }
+  };
+
+  /*
+   * Photos, for reading at the crag with no signal.
+   *
+   * Neither kind is in the page. A crag's own gallery comes from
+   * crag_photos.php, and a climb's from c_photos.php — both POSTs carrying the
+   * id and the `auth` token of the page they belong to. The token is per page:
+   * the crag's is refused for a climb, and one climb's for another. So a
+   * climb's photos cost its page and then the POST, which is why this only
+   * runs when asked for, one crag at a time.
+   *
+   * Each answer is markup: an `a[data-photoid]` per photo, its full-size
+   * picture in `data-image` and its caption in the thumbnail's alt. The
+   * picture is behind a signed link like a topo's, so it goes straight to the
+   * app to download.
+   */
+  function photosIn(markup) {
+    const doc = new DOMParser().parseFromString(markup, 'text/html');
+
+    return [...doc.querySelectorAll('a[data-photoid][data-image]')].map((a) => {
+      const img = a.querySelector('img');
+      return {
+        id: String(a.getAttribute('data-photoid')),
+        url: a.getAttribute('data-image'),
+        caption: text(img ? img.getAttribute('alt') : ''),
+      };
+    }).filter((p) => p.id && p.url);
+  }
+
+  async function postForPhotos(endpoint, id, auth) {
+    const body = new URLSearchParams();
+    body.set('id', String(id));
+    body.set('auth', auth);
+    body.set('photoswipe_loaded', '1');
+
+    const control = new AbortController();
+    const guard = setTimeout(() => control.abort(), 15000);
+
+    try {
+      const response = await fetch(ORIGIN + endpoint, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body,
+        signal: control.signal,
+      });
+
+      const markup = await response.text();
+      if (isThrottled(markup)) return { throttled: true };
+      if (!response.ok) return { error: 'status ' + response.status };
+      return { photos: photosIn(markup) };
+    } finally {
+      clearTimeout(guard);
+    }
+  }
+
+  /** One page's photos: the page for its token, then the POST for the list. */
+  async function photosOf(pageUrl, endpoint, idName, knownId) {
+    const response = await fetchWithin(pageUrl, 15000);
+    const html = await response.text();
+    if (isThrottled(html)) return { throttled: true };
+
+    const auth = scalar(html, 'auth');
+    const id = knownId || number(html, idName);
+    if (!auth || !id) return { photos: [] };
+
+    await jitter(150);
+    return postForPhotos(endpoint, id, auth);
+  }
+
+  /*
+   * [climbsJson] is [{id, url}] for the climbs still wanting photos, so a run
+   * that was stopped carries on rather than starting again. The same manners
+   * as an import, only fewer at once: two readers, scattered waits, and a
+   * shared hold that doubles to 8s when UKC pushes back.
+   */
+  window.__ukcSavePhotos = async function (cragUrl, withCrag, climbsJson, delayMs) {
+    let climbs = [];
+    try { climbs = JSON.parse(climbsJson); } catch (e) { climbs = []; }
+
+    let spacing = delayMs;
+    let holdUntil = 0;
+    let next = 0;
+    let done = 0;
+
+    async function read(pageUrl, endpoint, idName, id) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        while (Date.now() < holdUntil) await sleep(Math.max(50, holdUntil - Date.now()));
+
+        let result;
+        try {
+          result = await photosOf(pageUrl, endpoint, idName, id);
+        } catch (e) {
+          result = { error: String(e).slice(0, 80) };
+        }
+
+        if (result.throttled) {
+          spacing = Math.min(spacing * 2, 8000);
+          holdUntil = Math.max(holdUntil, Date.now() + Math.round(spacing * (2 + Math.random() * 2)));
+          Android.throttled(spacing);
+          continue;
+        }
+
+        if (result.photos) {
+          spacing = Math.max(delayMs, spacing * 0.85);
+          return result.photos;
+        }
+
+        await jitter(spacing * (attempt + 1) * 1.5);
+      }
+
+      return null;
+    }
+
+    try {
+      if (withCrag) {
+        const photos = await read(cragUrl, '/logbook/crag_photos.php', 'cragId', 0);
+        if (photos) {
+          for (const p of photos) Android.photo(0, p.id, p.url, p.caption);
+          Android.photosClimbDone(0);
+        }
+        await jitter(spacing);
+      }
+
+      async function worker() {
+        while (!Android.photosStopped()) {
+          const i = next++;
+          if (i >= climbs.length) return;
+
+          const climb = climbs[i];
+          const photos = await read(climb.url, '/logbook/c_photos.php', 'id', climb.id);
+
+          if (photos) {
+            for (const p of photos) Android.photo(climb.id, p.id, p.url, p.caption);
+            Android.photosClimbDone(climb.id);
+          }
+
+          done++;
+          Android.photosProgress(done, climbs.length);
+
+          await jitter(Math.max(delayMs, spacing));
+          await breather(spacing);
+        }
+      }
+
+      const pool = [worker()];
+      await jitter(spacing / 2);
+      pool.push(worker());
+      await Promise.all(pool);
+
+      Android.photosFinished();
+    } catch (e) {
+      Android.photosFailed(String(e).slice(0, 120));
     }
   };
 

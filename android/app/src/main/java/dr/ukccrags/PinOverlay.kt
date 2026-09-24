@@ -9,8 +9,8 @@ import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Overlay
 
-/** Whether a pin stands for a whole crag or one buttress of one. */
-enum class PinKind { CRAG, BUTTRESS }
+/** Whether a pin stands for a whole crag, one buttress of one, or its parking. */
+enum class PinKind { CRAG, BUTTRESS, PARKING }
 
 /** Something to put on the map: a crag, or one of its buttresses. */
 data class Pin(
@@ -166,14 +166,25 @@ class PinOverlay(
                 fill.color = pin.colour
                 fill.alpha = if (pin.approximate) 150 else 255
 
-                // A crag is a disc, a buttress a smaller diamond: shape carries
-                // the difference even where the colours are hard to tell apart.
-                if (pin.kind == PinKind.CRAG) {
-                    canvas.drawCircle(x, y, radius, fill)
-                    canvas.drawCircle(x, y, radius, edge)
-                } else {
-                    drawDiamond(canvas, x, y, radius * 0.85f, fill)
-                    drawDiamond(canvas, x, y, radius * 0.85f, edge)
+                // A crag is a disc, a buttress a smaller diamond, parking a
+                // road-sign square with a P: shape carries the difference even
+                // where the colours are hard to tell apart.
+                when (pin.kind) {
+                    PinKind.CRAG -> {
+                        canvas.drawCircle(x, y, radius, fill)
+                        canvas.drawCircle(x, y, radius, edge)
+                    }
+                    PinKind.BUTTRESS -> {
+                        drawDiamond(canvas, x, y, radius * 0.85f, fill)
+                        drawDiamond(canvas, x, y, radius * 0.85f, edge)
+                    }
+                    PinKind.PARKING -> {
+                        drawSquare(canvas, x, y, radius * 0.9f, fill)
+                        drawSquare(canvas, x, y, radius * 0.9f, edge)
+                        canvas.withUpright(upright, x, y) {
+                            drawText("P", x, y + text.textSize / 3f, text)
+                        }
+                    }
                 }
 
                 hits.add(Triple(x, y, pin))
@@ -191,10 +202,15 @@ class PinOverlay(
             // Same shape language as a single pin: buttresses are diamonds
             // however many of them are stacked up.
             val buttresses = group.all { it.kind == PinKind.BUTTRESS }
+            val parking = group.all { it.kind == PinKind.PARKING }
 
             if (buttresses) {
                 drawDiamond(canvas, x, y, bubble * 1.15f, fill)
                 drawDiamond(canvas, x, y, bubble * 1.15f, edge)
+            } else if (parking) {
+                fill.color = group.first().colour
+                drawSquare(canvas, x, y, bubble, fill)
+                drawSquare(canvas, x, y, bubble, edge)
             } else {
                 canvas.drawCircle(x, y, bubble, fill)
                 canvas.drawCircle(x, y, bubble, edge)
@@ -213,7 +229,7 @@ class PinOverlay(
             // Buttresses with no published position all pile onto their crag's
             // pin, and a bare count says nothing about where you are looking.
             // A group of crags stays a plain count: naming one would mislead.
-            if (buttresses) {
+            if (buttresses || parking) {
                 val crag = group.map { it.crag }.distinct().singleOrNull()
                 if (!crag.isNullOrBlank()) labelled.add(Triple(x, y + bubble, crag))
             }
@@ -307,6 +323,13 @@ class PinOverlay(
         rotate(-orientation, x, y)
         draw()
         restore()
+    }
+
+    private val square = RectF()
+
+    private fun drawSquare(canvas: Canvas, x: Float, y: Float, size: Float, paint: Paint) {
+        square.set(x - size, y - size, x + size, y + size)
+        canvas.drawRoundRect(square, size * 0.3f, size * 0.3f, paint)
     }
 
     private val diamond = android.graphics.Path()

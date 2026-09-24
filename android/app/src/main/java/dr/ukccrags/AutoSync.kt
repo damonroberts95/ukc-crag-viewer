@@ -52,7 +52,8 @@ object AutoSync {
         host: android.view.ViewGroup?,
         onAdded: (Int) -> Unit,
     ) {
-        if (running || CragStore.count(context) == 0 || !Session.signedIn(context)) return
+        if (running || !Settings.weeklySync(context)) return
+        if (CragStore.count(context) == 0 || !Session.signedIn(context)) return
 
         val last = prefs(context).getLong(KEY_LAST, 0L)
         val since = System.currentTimeMillis() - last

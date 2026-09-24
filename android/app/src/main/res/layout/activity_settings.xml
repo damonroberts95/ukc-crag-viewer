@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        style="@style/Widget.UkcCrags.Toolbar" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="24dp">
+
+            <TextView
+                style="@style/Widget.UkcCrags.SettingsHeader"
+                android:text="@string/settings_directions" />
+
+            <include
+                android:id="@+id/directionsParking"
+                layout="@layout/item_setting_switch" />
+
+            <include
+                android:id="@+id/showParking"
+                layout="@layout/item_setting_switch" />
+
+            <include
+                android:id="@+id/units"
+                layout="@layout/item_setting" />
+
+            <TextView
+                style="@style/Widget.UkcCrags.SettingsHeader"
+                android:text="@string/settings_storage" />
+
+            <include
+                android:id="@+id/clearMap"
+                layout="@layout/item_setting" />
+
+            <include
+                android:id="@+id/clearPhotos"
+                layout="@layout/item_setting" />
+
+            <include
+                android:id="@+id/topos"
+                layout="@layout/item_setting" />
+
+            <TextView
+                style="@style/Widget.UkcCrags.SettingsHeader"
+                android:text="@string/settings_logbook" />
+
+            <include
+                android:id="@+id/weeklySync"
+                layout="@layout/item_setting_switch" />
+
+            <TextView
+                style="@style/Widget.UkcCrags.SettingsHeader"
+                android:text="@string/settings_help" />
+
+            <include
+                android:id="@+id/guide"
+                layout="@layout/item_setting" />
+
+            <include
+                android:id="@+id/log"
+                layout="@layout/item_setting" />
+
+            <include
+                android:id="@+id/updates"
+                layout="@layout/item_setting" />
+
+        </LinearLayout>
+
+    </ScrollView>
+
+</LinearLayout>

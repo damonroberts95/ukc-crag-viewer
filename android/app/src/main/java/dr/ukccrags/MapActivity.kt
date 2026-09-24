@@ -45,6 +45,16 @@ class MapActivity : AppCompatActivity() {
     private var single: Crag? = null
 
     private lateinit var overlay: PinOverlay
+
+    /**
+     * Parking, on a layer of its own beneath the crags. Sharing the crags'
+     * layer would group each crag with its own car park a few hundred metres
+     * off, turning every lone pin into a count bubble at any useful zoom.
+     */
+    private lateinit var parkingOverlay: PinOverlay
+    private var parkingBuiltFor: BoundingBox? = null
+    private var showParking = true
+
     private var locator: MyLocationNewOverlay? = null
 
     /** The walking line currently drawn: a dark casing under a bright core. */
@@ -151,6 +161,13 @@ class MapActivity : AppCompatActivity() {
             onCluster = { centre, group -> openCluster(centre, group) },
         )
 
+        parkingOverlay = PinOverlay(
+            onPin = { showSheet(it) },
+            onCluster = { centre, group -> openCluster(centre, group) },
+        )
+        showParking = Settings.showParking(this)
+
+        binding.map.overlays.add(parkingOverlay)
         binding.map.overlays.add(overlay)
 
         // Two fingers turn the map. Stood under a crag, matching the map to
@@ -176,7 +193,7 @@ class MapActivity : AppCompatActivity() {
         // answers "which lump of rock" once it can show them apart.
         binding.map.addMapListener(object : org.osmdroid.events.MapListener {
             override fun onScroll(event: org.osmdroid.events.ScrollEvent?): Boolean {
-                if (detailed) rebuild()
+                if (detailed || (showParking && single == null)) rebuild()
                 return false
             }
 
@@ -190,6 +207,7 @@ class MapActivity : AppCompatActivity() {
         })
 
         buildPins()
+        buildParking(force = true)
         buildLegend()
     }
 
@@ -204,7 +222,7 @@ class MapActivity : AppCompatActivity() {
         // Buttresses of one crag are that crag, so name it. A group of crags is
         // just a group, and naming any one of them would be misleading.
         val shared = group
-            .takeIf { pins -> pins.all { it.kind == PinKind.BUTTRESS } }
+            .takeIf { pins -> pins.none { it.kind == PinKind.CRAG } }
             ?.map { it.crag }
             ?.distinct()
             ?.singleOrNull()
@@ -214,8 +232,11 @@ class MapActivity : AppCompatActivity() {
         val title = if (shared == null) count else "$shared · $count"
 
         val labels = ordered.map { pin ->
-            val kind = if (pin.kind == PinKind.CRAG) "" else " · " +
-                getString(R.string.buttresses_legend).lowercase()
+            val kind = when (pin.kind) {
+                PinKind.CRAG -> ""
+                PinKind.BUTTRESS -> " · " + getString(R.string.buttresses_legend).lowercase()
+                PinKind.PARKING -> " · " + getString(R.string.parking_legend).lowercase()
+            }
 
             // With the crag in the title, repeating it on every row is noise.
             val where = if (shared == null && pin.kind == PinKind.BUTTRESS) {
@@ -263,6 +284,8 @@ class MapActivity : AppCompatActivity() {
     }
 
     private fun rebuildNow() {
+        buildParking()
+
         val wanted = single == null && binding.map.zoomLevelDouble >= BUTTRESS_ZOOM
 
         if (wanted == detailed && !wanted) return
@@ -316,9 +339,9 @@ class MapActivity : AppCompatActivity() {
     }
 
     /** True once the view has shifted by a third of its own width or height. */
-    private fun movedFar(): Boolean {
+    private fun movedFar(since: BoundingBox? = builtFor): Boolean {
         val box = binding.map.boundingBox
-        val last = builtFor ?: return true
+        val last = since ?: return true
 
         val latitudeSpan = box.latNorth - box.latSouth
         val longitudeSpan = box.lonEast - box.lonWest
@@ -607,6 +630,64 @@ class MapActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Car parks, labelled with the crag they serve. One crag's map always has
+     * its own; the library map shows them only once zoomed in to where a car
+     * park is a decision rather than noise, and asks the index for just the
+     * ones in view.
+     */
+    private fun buildParking(force: Boolean = false) {
+        val crag = single
+        val zoomed = binding.map.zoomLevelDouble >= PARKING_ZOOM
+        val wanted = showParking && (crag != null || zoomed)
+        val had = parkingOverlay.pins.isNotEmpty()
+
+        if (!wanted) {
+            parkingBuiltFor = null
+            if (had) {
+                parkingOverlay.pins = emptyList()
+                buildLegend()
+                binding.map.invalidate()
+            }
+            return
+        }
+
+        if (!force && parkingBuiltFor != null && (crag != null || !movedFar(parkingBuiltFor))) return
+
+        parkingBuiltFor = binding.map.boundingBox
+
+        val found = if (crag != null) {
+            CragDb.parking(this, crag.id)
+        } else {
+            val box = binding.map.boundingBox
+            val margin = 0.02
+            CragDb.parkingWithin(
+                this,
+                box.latSouth - margin,
+                box.latNorth + margin,
+                box.lonWest - margin,
+                box.lonEast + margin,
+            )
+        }
+
+        val colour = ContextCompat.getColor(this, R.color.pin_parking)
+
+        parkingOverlay.pins = found.map { spot ->
+            Pin(
+                label = spot.cragArea,
+                latitude = spot.latitude,
+                longitude = spot.longitude,
+                colour = colour,
+                kind = PinKind.PARKING,
+                crag = spot.cragArea,
+                payload = spot,
+            )
+        }
+
+        if (had != parkingOverlay.pins.isNotEmpty()) buildLegend()
+        binding.map.invalidate()
+    }
+
     /** Frames whatever is stored, however widely spread. */
     private fun fitTo(pins: List<Pin>) {
         val north = pins.maxOf { it.latitude }
@@ -636,6 +717,10 @@ class MapActivity : AppCompatActivity() {
      */
     private fun buildLegend() {
         binding.legend.removeAllViews()
+
+        if (::parkingOverlay.isInitialized && parkingOverlay.pins.isNotEmpty()) {
+            addLegend(getString(R.string.parking_legend), R.color.pin_parking)
+        }
 
         if (single != null || detailed) {
             addLegend(getString(R.string.buttresses_legend), R.color.pin_buttress)
@@ -678,6 +763,7 @@ class MapActivity : AppCompatActivity() {
             is CragCard -> fillCrag(view, what, pin, sheet)
             is ButtressAt -> fillButtress(view, what, pin, sheet)
             is ButtressPin -> fillPin(view, what, pin, sheet)
+            is ParkingPin -> fillParking(view, what, pin, sheet)
         }
 
         sheet.show()
@@ -714,9 +800,24 @@ class MapActivity : AppCompatActivity() {
             )
         }
 
+        // Parking comes from the index, so the sheet can route to it without
+        // reading the crag.
+        val parking = CragDb.parking(this, crag.id).map {
+            Parking(it.name, it.latitude, it.longitude)
+        }
+
+        view.directions.setText(
+            if (Settings.directionsToParking(this) && parking.isNotEmpty()) R.string.directions_to_parking
+            else R.string.directions
+        )
         view.directions.setOnClickListener {
             sheet.dismiss()
-            Maps.open(this, pin.latitude, pin.longitude, crag.area)
+            Maps.directionsTo(this, crag.area, pin.latitude, pin.longitude, parking)
+        }
+        view.directions.setOnLongClickListener {
+            sheet.dismiss()
+            Maps.directionsTo(this, crag.area, pin.latitude, pin.longitude, parking, choose = true)
+            true
         }
 
         view.walk.setOnClickListener {
@@ -773,6 +874,47 @@ class MapActivity : AppCompatActivity() {
         view.walk.setOnClickListener {
             sheet.dismiss()
             walkTo(at.cragId, home?.latitude, home?.longitude, pin)
+        }
+
+        view.topos.visibility = View.GONE
+    }
+
+    /** A car park: which crag it serves, a way into that crag, and the drive there. */
+    private fun fillParking(
+        view: SheetPinBinding,
+        at: ParkingPin,
+        pin: Pin,
+        sheet: BottomSheetDialog,
+    ) {
+        val away = Nearby.lastKnown(this)?.let {
+            Walk.metresBetween(it.latitude, it.longitude, at.latitude, at.longitude).toFloat()
+        }
+
+        view.name.text = at.cragArea
+        view.detail.text = buildString {
+            append(getString(R.string.parking_legend))
+            if (at.name.isNotBlank() && !at.name.equals(at.cragArea, true)) append(" · ").append(at.name)
+            if (away != null) append(" · ").append(Units.distance(this@MapActivity, away))
+        }
+
+        view.open.text = getString(R.string.open_crag)
+        view.open.setOnClickListener {
+            sheet.dismiss()
+            startActivity(
+                Intent(this, CragActivity::class.java)
+                    .putExtra(CragActivity.EXTRA_AREA, at.cragArea)
+            )
+        }
+
+        view.directions.setText(R.string.directions_to_parking)
+        view.directions.setOnClickListener {
+            sheet.dismiss()
+            Maps.open(this, at.latitude, at.longitude, getString(R.string.parking_for, at.cragArea))
+        }
+
+        view.walk.setOnClickListener {
+            sheet.dismiss()
+            walkTo(at.cragId, null, null, pin)
         }
 
         view.topos.visibility = View.GONE
@@ -981,6 +1123,12 @@ class MapActivity : AppCompatActivity() {
         }
 
         menu.setGroupCheckable(MENU_SOURCES, true, true)
+
+        menu.add(0, MENU_PARKING, 50, R.string.show_parking).apply {
+            isCheckable = true
+            isChecked = showParking
+        }
+
         menu.add(0, MENU_CACHE, 100, R.string.map_cache_size)
         return true
     }
@@ -990,6 +1138,19 @@ class MapActivity : AppCompatActivity() {
 
         if (item.groupId == MENU_SOURCES && item.itemId in sources.indices) {
             applySource(sources[item.itemId])
+            return true
+        }
+
+        if (item.itemId == MENU_PARKING) {
+            showParking = !showParking
+            Settings.setShowParking(this, showParking)
+            item.isChecked = showParking
+            buildParking(force = true)
+
+            // Zoomed out, turning them on shows nothing yet; say why.
+            if (showParking && parkingOverlay.pins.isEmpty()) {
+                note(getString(if (single == null) R.string.parking_zoom_in else R.string.parking_none))
+            }
             return true
         }
 
@@ -1029,6 +1190,10 @@ class MapActivity : AppCompatActivity() {
 
         private const val MENU_SOURCES = 1
         private const val MENU_CACHE = 900
+        private const val MENU_PARKING = 901
+
+        /** Zoom at which the library map starts drawing car parks. */
+        private const val PARKING_ZOOM = 12.0
 
         /** How long the map has to sit still before the pins are rebuilt. */
         private const val SETTLE_MS = 140L

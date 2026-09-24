@@ -47,6 +47,15 @@ data class ButtressPin(
     val approximate: Boolean = false,
 )
 
+/** A parking spot, carrying the name of the crag it serves for its label. */
+data class ParkingPin(
+    val cragId: String,
+    val cragArea: String,
+    val name: String,
+    val latitude: Double,
+    val longitude: Double,
+)
+
 /** A climb found by a search, with the crag it is at. */
 data class ClimbHit(
     val cragId: String,
@@ -78,7 +87,7 @@ data class ClimbHit(
 object CragDb {
 
     private const val NAME = "crags.db"
-    private const val VERSION = 1
+    private const val VERSION = 2
 
     private class Helper(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
 
@@ -133,9 +142,31 @@ object CragDb {
             db.execSQL("CREATE INDEX buttresses_crag ON buttresses (crag_id)")
             db.execSQL("CREATE INDEX climbs_crag ON climbs (crag_id)")
             db.execSQL("CREATE INDEX climbs_name ON climbs (name)")
+
+            createParking(db)
         }
 
-        override fun onUpgrade(db: SQLiteDatabase, from: Int, to: Int) = Unit
+        /*
+         * Parking arrived in version 2. The table starts empty: crags imported
+         * before then never read it, and only a refresh can fetch it.
+         */
+        override fun onUpgrade(db: SQLiteDatabase, from: Int, to: Int) {
+            if (from < 2) createParking(db)
+        }
+
+        private fun createParking(db: SQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE parking (
+                    crag_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    latitude REAL NOT NULL,
+                    longitude REAL NOT NULL
+                )
+                """.trimIndent()
+            )
+            db.execSQL("CREATE INDEX parking_crag ON parking (crag_id)")
+        }
     }
 
     private var helper: Helper? = null
@@ -159,6 +190,20 @@ object CragDb {
         try {
             database.delete("climbs", "crag_id = ?", arrayOf(crag.id))
             database.delete("buttresses", "crag_id = ?", arrayOf(crag.id))
+            database.delete("parking", "crag_id = ?", arrayOf(crag.id))
+
+            for (spot in crag.parking) {
+                database.insert(
+                    "parking",
+                    null,
+                    ContentValues().apply {
+                        put("crag_id", crag.id)
+                        put("name", spot.name)
+                        put("latitude", spot.latitude)
+                        put("longitude", spot.longitude)
+                    },
+                )
+            }
 
             database.insertWithOnConflict(
                 "crags",
@@ -223,6 +268,7 @@ object CragDb {
 
         database.delete("climbs", "crag_id = ?", arrayOf(id))
         database.delete("buttresses", "crag_id = ?", arrayOf(id))
+        database.delete("parking", "crag_id = ?", arrayOf(id))
         database.delete("crags", "id = ?", arrayOf(id))
     }
 
@@ -231,6 +277,7 @@ object CragDb {
 
         database.delete("climbs", null, null)
         database.delete("buttresses", null, null)
+        database.delete("parking", null, null)
         database.delete("crags", null, null)
     }
 
@@ -321,6 +368,53 @@ object CragDb {
                         longitude = if (cursor.isNull(4)) null else cursor.getDouble(4),
                         climbCount = cursor.getInt(5),
                         approximate = cursor.getInt(6) == 1,
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * Parking inside a box, for the library map. Bounds go into the SQL for the
+     * same reason as [pinsWithin]: bound as text, they would match nothing.
+     */
+    fun parkingWithin(
+        context: Context,
+        south: Double,
+        north: Double,
+        west: Double,
+        east: Double,
+    ): List<ParkingPin> = parkingWhere(
+        context,
+        "p.latitude BETWEEN $south AND $north AND p.longitude BETWEEN $west AND $east",
+        null,
+    )
+
+    /** One crag's parking, for its directions and its own map. */
+    fun parking(context: Context, cragId: String): List<ParkingPin> =
+        parkingWhere(context, "p.crag_id = ?", arrayOf(cragId))
+
+    private fun parkingWhere(
+        context: Context,
+        where: String,
+        args: Array<String>?,
+    ): List<ParkingPin> = db(context).rawQuery(
+        """
+        SELECT p.crag_id, c.area, p.name, p.latitude, p.longitude
+        FROM parking p JOIN crags c ON c.id = p.crag_id
+        WHERE $where
+        """.trimIndent(),
+        args,
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) {
+                add(
+                    ParkingPin(
+                        cragId = cursor.getString(0),
+                        cragArea = cursor.getString(1),
+                        name = cursor.getString(2),
+                        latitude = cursor.getDouble(3),
+                        longitude = cursor.getDouble(4),
                     )
                 )
             }

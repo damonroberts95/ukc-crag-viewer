@@ -17,6 +17,8 @@
     <color name="type_winter">#CE93D8</color>
     <color name="type_other">#B0BEC5</color>
     <color name="pin_buttress">#FFB74D</color>
+    <!-- Lifted, but still dark enough for the white P on it. -->
+    <color name="pin_parking">#2F7DE1</color>
     <!-- Orange over a dark casing: the one hue OSM never uses for terrain. -->
     <color name="walk_line">#FF9100</color>
     <color name="walk_casing">#000000</color>

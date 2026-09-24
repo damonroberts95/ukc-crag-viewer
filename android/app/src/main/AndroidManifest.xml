@@ -75,6 +75,15 @@
             android:name=".MapActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".PhotosActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".SettingsActivity"
+            android:parentActivityName=".CragListActivity"
+            android:exported="false" />
+
         <!--
             Lets the package installer read a downloaded APK out of the cache
             directory. Not exported: the URI is handed out per intent with a

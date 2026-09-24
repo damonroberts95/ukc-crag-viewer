@@ -76,9 +76,31 @@ class CragActivity : AppCompatActivity() {
         binding.list.layoutManager = LinearLayoutManager(this)
         binding.list.adapter = adapter
 
-        binding.cragDirections.visibility = if (crag.hasPin) View.VISIBLE else View.GONE
+        showDirections()
+
         binding.cragDirections.setOnClickListener {
-            Maps.open(this, crag.latitude!!, crag.longitude!!, crag.area)
+            Maps.directionsTo(this, crag.area, crag.latitude, crag.longitude, crag.parking)
+        }
+
+        // The other destination, for the day the default is not the one wanted.
+        binding.cragDirections.setOnLongClickListener {
+            Maps.directionsTo(
+                this, crag.area, crag.latitude, crag.longitude, crag.parking, choose = true,
+            )
+            true
+        }
+
+        binding.photos.setOnClickListener {
+            startActivity(
+                Intent(this, PhotosActivity::class.java)
+                    .putExtra(PhotosActivity.EXTRA_CRAG_ID, crag.id)
+                    .putExtra(PhotosActivity.EXTRA_TITLE, crag.area)
+            )
+        }
+
+        binding.photoBox.setOnClickListener {
+            PhotoFetch.stop()
+            binding.photoStatus.text = getString(R.string.photos_stopping)
         }
 
         binding.source.setOnClickListener { Maps.openUrl(this, crag.sourceUrl) }
@@ -95,6 +117,7 @@ class CragActivity : AppCompatActivity() {
             .getOrDefault(Sort.UKC)
 
         showNotes()
+        showPhotos()
 
         binding.search.doAfterTextChanged {
             query = it?.toString().orEmpty().trim().lowercase()
@@ -182,6 +205,11 @@ class CragActivity : AppCompatActivity() {
 
     override fun onPrepareOptionsMenu(menu: android.view.Menu): Boolean {
         menu.findItem(R.id.map)?.isVisible = crag.hasPin || crag.locatedButtresses > 0
+        menu.findItem(R.id.save_photos)?.setTitle(
+            if (PhotoFetch.cragId == crag.id) R.string.photos_stop else R.string.save_photos
+        )
+        menu.findItem(R.id.delete_photos)?.isVisible =
+            PhotoFetch.cragId != crag.id && PhotoCache.count(this, crag.id) > 0
         return super.onPrepareOptionsMenu(menu)
     }
 
@@ -196,6 +224,16 @@ class CragActivity : AppCompatActivity() {
                 Intent(this, MapActivity::class.java)
                     .putExtra(MapActivity.EXTRA_AREA, crag.area)
             )
+            return true
+        }
+
+        if (item.itemId == R.id.save_photos) {
+            if (PhotoFetch.cragId == crag.id) PhotoFetch.stop() else offerPhotos()
+            return true
+        }
+
+        if (item.itemId == R.id.delete_photos) {
+            confirmDeletePhotos()
             return true
         }
 
@@ -219,9 +257,31 @@ class CragActivity : AppCompatActivity() {
             crag = it
             setUpTypeFilter()
             showNotes()
+            showDirections()
+            showPhotos()
             invalidateOptionsMenu()
             refresh()
         }
+    }
+
+    override fun onDestroy() {
+        // The page reading photos lives in this screen's window.
+        if (PhotoFetch.cragId == crag.id) PhotoFetch.detach()
+        super.onDestroy()
+    }
+
+    /**
+     * Says where the button goes. Parking is only known for crags read since
+     * it was, so an older crag keeps pointing at its own pin until refreshed.
+     */
+    private fun showDirections() {
+        val toParking = Settings.directionsToParking(this) && crag.parking.isNotEmpty()
+
+        binding.cragDirections.visibility =
+            if (crag.hasPin || crag.parking.isNotEmpty()) View.VISIBLE else View.GONE
+        binding.cragDirections.setText(
+            if (toParking) R.string.directions_to_parking else R.string.directions_to_crag
+        )
     }
 
     /** The crag's own notes, sat above the climb list where they get read. */
@@ -236,7 +296,120 @@ class CragActivity : AppCompatActivity() {
                 .setMessage(notes)
                 .setPositiveButton(android.R.string.ok, null)
                 .show()
+                .findViewById<android.widget.TextView>(android.R.id.message)
+                ?.showLinks()
         }
+    }
+
+    private fun showPhotos() {
+        val saved = PhotoCache.count(this, crag.id)
+
+        binding.photos.visibility = if (saved > 0) View.VISIBLE else View.GONE
+        binding.photos.text = getString(R.string.photos_saved_n, saved)
+    }
+
+    /**
+     * Saving photos is two page reads per climb, so the cost is named before
+     * anything is asked of UKC. The crag's own gallery is one read and is the
+     * cheap choice; a climb's photos are the useful one at a boulder.
+     */
+    private fun offerPhotos() {
+        val climbs = crag.buttresses.flatMap { it.climbs }
+            .filter { it.photos > 0 && it.climbId > 0 }
+            .distinctBy { it.climbId }
+        val unread = PhotoFetch.unread(this, crag)
+        val photos = unread.sumOf { it.photos }
+
+        val message = when {
+            climbs.isEmpty() -> getString(R.string.save_photos_crag_only)
+            unread.isEmpty() -> getString(R.string.save_photos_again)
+            else -> getString(
+                R.string.save_photos_cost,
+                unread.size,
+                photos,
+                ((unread.size * 0.7) / 60).toInt().coerceAtLeast(1),
+                ((photos + CRAG_GALLERY) * 0.15).toInt().coerceAtLeast(1),
+            )
+        }
+
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.save_photos)
+            .setMessage(message)
+            .setNegativeButton(android.R.string.cancel, null)
+
+        if (climbs.isEmpty()) {
+            dialog.setPositiveButton(R.string.save_photos_go) { _, _ -> savePhotos(false) }
+        } else {
+            dialog.setPositiveButton(R.string.save_photos_all) { _, _ -> savePhotos(true) }
+            dialog.setNeutralButton(R.string.save_photos_gallery) { _, _ -> savePhotos(false) }
+        }
+
+        dialog.show()
+    }
+
+    private fun savePhotos(withClimbs: Boolean) {
+        if (PhotoFetch.running()) {
+            android.widget.Toast.makeText(this, R.string.photos_busy, android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        binding.photoBox.visibility = View.VISIBLE
+        binding.photoBar.isIndeterminate = true
+        binding.photoStatus.text = getString(R.string.photos_starting)
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        PhotoFetch.start(binding.root as ViewGroup, crag, withClimbs, object : PhotoFetch.Listener {
+            override fun progress(read: Int, total: Int, downloading: Int) {
+                if (isDestroyed) return
+
+                binding.photoStatus.text = when {
+                    total > 0 && read < total ->
+                        getString(R.string.photos_reading, read, total)
+                    downloading > 0 ->
+                        resources.getQuantityString(R.plurals.photos_left, downloading, downloading)
+                    else -> getString(R.string.photos_starting)
+                }
+
+                binding.photoBar.isIndeterminate = total == 0 || read >= total
+                if (total > 0 && read < total) binding.photoBar.setProgressCompat(read * 100 / total, true)
+
+                showPhotos()
+            }
+
+            override fun finished(saved: Int, failed: String?) {
+                if (isDestroyed) return
+
+                window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                binding.photoBox.visibility = View.GONE
+                showPhotos()
+                invalidateOptionsMenu()
+
+                android.widget.Toast.makeText(
+                    this@CragActivity,
+                    if (failed == null) resources.getQuantityString(R.plurals.photos_done, saved, saved)
+                    else getString(R.string.photos_failed, saved, failed),
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+        })
+
+        invalidateOptionsMenu()
+    }
+
+    private fun confirmDeletePhotos() {
+        val count = PhotoCache.count(this, crag.id)
+        val megabytes = PhotoCache.bytes(this, crag.id) / (1024 * 1024)
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.delete_photos)
+            .setMessage(getString(R.string.delete_photos_warning, count, megabytes))
+            .setPositiveButton(R.string.delete_photos) { _, _ ->
+                PhotoCache.clear(this, crag.id)
+                showPhotos()
+                invalidateOptionsMenu()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /** True when this climb has a line on one of the crag's cached topos. */
@@ -265,6 +438,7 @@ class CragActivity : AppCompatActivity() {
 
         view.description.text = climb.description.ifBlank { getString(R.string.no_description) }
         view.description.alpha = if (climb.description.isBlank()) 0.6f else 1f
+        view.description.showLinks()
 
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle(climb.name)
@@ -282,12 +456,26 @@ class CragActivity : AppCompatActivity() {
             )
         }
 
-        // Climb photos are not cached: they open on UKC, where they live.
-        view.photos.visibility = if (climb.photos > 0) View.VISIBLE else View.GONE
-        view.photos.text = getString(R.string.see_photos_n, climb.photos)
+        // Saved photos open here, with no signal needed; otherwise on UKC.
+        val saved = if (climb.climbId > 0) PhotoCache.photos(this, crag.id, climb.climbId) else emptyList()
+
+        view.photos.visibility = if (climb.photos > 0 || saved.isNotEmpty()) View.VISIBLE else View.GONE
+        view.photos.text = if (saved.isNotEmpty()) getString(R.string.photos_saved_n, saved.size)
+        else getString(R.string.see_photos_n, climb.photos)
         view.photos.setOnClickListener {
             dialog.dismiss()
-            Maps.openUrl(this, climb.url + "#photos")
+
+            if (saved.isEmpty()) {
+                Maps.openUrl(this, climb.url + "#photos")
+                return@setOnClickListener
+            }
+
+            startActivity(
+                Intent(this, PhotosActivity::class.java)
+                    .putExtra(PhotosActivity.EXTRA_CRAG_ID, crag.id)
+                    .putExtra(PhotosActivity.EXTRA_CLIMB_ID, climb.climbId)
+                    .putExtra(PhotosActivity.EXTRA_TITLE, climb.name)
+            )
         }
 
         view.open.setOnClickListener {
@@ -489,6 +677,9 @@ class CragActivity : AppCompatActivity() {
 
         /** A climb name to filter to on arrival. */
         const val EXTRA_FIND = "find"
+
+        /** Roughly what UKC shows in a crag's own gallery, for the size estimate. */
+        private const val CRAG_GALLERY = 24
 
         private const val TYPE_BUTTRESS = 0
         private const val TYPE_CLIMB = 1

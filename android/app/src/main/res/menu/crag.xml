@@ -13,6 +13,17 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/save_photos"
+        android:title="@string/save_photos"
+        app:showAsAction="never" />
+
+    <!-- Hidden until this crag has photos saved. -->
+    <item
+        android:id="@+id/delete_photos"
+        android:title="@string/delete_photos"
+        app:showAsAction="never" />
+
+    <item
         android:id="@+id/refresh_this"
         android:title="@string/refresh_this_crag"
         app:showAsAction="never" />

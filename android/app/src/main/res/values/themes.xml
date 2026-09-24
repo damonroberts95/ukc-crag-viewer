@@ -11,4 +11,15 @@
     </style>
 
     <style name="Widget.UkcCrags.Toolbar" parent="Widget.Material3.Toolbar.Surface" />
+
+    <style name="Widget.UkcCrags.SettingsHeader" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:paddingHorizontal">20dp</item>
+        <item name="android:paddingTop">20dp</item>
+        <item name="android:paddingBottom">4dp</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">?attr/colorPrimary</item>
+    </style>
 </resources>

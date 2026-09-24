@@ -58,6 +58,13 @@ data class Topo(
 ) {
 }
 
+/** Where UKC says to leave the car. A big crag may have one for each end. */
+data class Parking(
+    val name: String,
+    val latitude: Double,
+    val longitude: Double,
+)
+
 data class Crag(
     val area: String,
     val sourceUrl: String,
@@ -68,6 +75,8 @@ data class Crag(
     val description: String = "",
     val buttresses: List<Buttress>,
     val topos: List<Topo> = emptyList(),
+    /** Empty for crags imported before parking was read, until refreshed. */
+    val parking: List<Parking> = emptyList(),
 ) {
     val hasPin: Boolean get() = latitude != null && longitude != null
 
@@ -139,11 +148,12 @@ object CragStore {
 
     fun parseJson(json: String): Crag? = runCatching { parse(JSONObject(json)) }.getOrNull()
 
-    /** Deletes every imported crag and its cached topo photos. Ticks survive. */
+    /** Deletes every imported crag, its topos and any saved photos. Ticks survive. */
     fun clear(context: Context) {
         storeDir(context).listFiles().orEmpty().forEach { it.delete() }
         CragDb.clear(context)
         TopoCache.clear(context)
+        PhotoCache.clearAll(context)
     }
 
     /** Drops one crag and its topo photos, so a refresh starts from nothing. */
@@ -215,8 +225,18 @@ object CragStore {
             description = root.optString("description"),
             buttresses = buttresses,
             topos = parseTopos(root.arrayFor("topos")),
+            parking = parseParking(root.arrayFor("parking")),
         )
     }
+
+    private fun parseParking(array: JSONArray): List<Parking> =
+        (0 until array.length()).mapNotNull { index ->
+            val node = array.optJSONObject(index) ?: return@mapNotNull null
+            val latitude = node.optDoubleOrNull("latitude") ?: return@mapNotNull null
+            val longitude = node.optDoubleOrNull("longitude") ?: return@mapNotNull null
+
+            Parking(node.optString("name"), latitude, longitude)
+        }
 
     private fun parseTopos(array: JSONArray): List<Topo> =
         (0 until array.length()).mapNotNull { index ->

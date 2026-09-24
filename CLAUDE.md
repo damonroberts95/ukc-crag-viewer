@@ -73,6 +73,10 @@ automated check; anything user-visible needs a look on the phone.
     attempts and wishlist in preferences **keyed by climb URL** so they survive
     a re-import.
   - `TopoView` — draws lines over the photo, pinch zoom, grade labels.
+  - `PhotoFetch` / `PhotoCache` / `PhotosActivity` — crag and climb photos,
+    saved per crag only when asked, viewed offline.
+  - `SettingsActivity` / `Settings` / `Guide` — choices, cache clearing, the
+    first-run guide.
   - `TopoCache` — downloads topo pixels in Kotlin on a 4-thread pool with the
     session cookies. Must not block: all page script runs on one thread.
   - `Session` — whether UKC knows who we are, learned from rendered pages.

@@ -16,6 +16,12 @@
     <color name="type_winter">#6A1B9A</color>
     <color name="type_other">#546E7A</color>
     <color name="pin_buttress">#EF6C00</color>
+    <!-- Road-sign blue: a car park looks like the sign for one. -->
+    <color name="pin_parking">#0057B8</color>
+    <!-- Photos are looked at on black in either mode, the way a viewer does. -->
+    <color name="photo_ground">#000000</color>
+    <color name="photo_caption">#FFFFFF</color>
+    <color name="photo_scrim">#99000000</color>
     <!-- Orange over a dark casing: the one hue OSM never uses for terrain. -->
     <color name="walk_line">#FF6D00</color>
     <color name="walk_casing">#1A1A1A</color>

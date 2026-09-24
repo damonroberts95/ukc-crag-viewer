@@ -85,14 +85,10 @@
 
     </item>
 
+    <!-- The log, updates and the getting-started guide live in here too. -->
     <item
-        android:id="@+id/log"
-        android:title="@string/debug_log"
-        app:showAsAction="never" />
-
-    <item
-        android:id="@+id/updates"
-        android:title="@string/check_updates"
+        android:id="@+id/settings"
+        android:title="@string/settings"
         app:showAsAction="never" />
 
 </menu>

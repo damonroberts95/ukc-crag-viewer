@@ -32,6 +32,57 @@ object Maps {
         Toast.makeText(context, R.string.no_maps_app, Toast.LENGTH_SHORT).show()
     }
 
+    /**
+     * Directions for a crag: to its parking when UKC gives one and the reader
+     * has not turned that off, to the crag's own pin otherwise. A crag with
+     * several car parks asks which, since they usually serve different ends.
+     * [choose] always asks, for when the default is not what is wanted today.
+     */
+    fun directionsTo(
+        context: Context,
+        area: String,
+        latitude: Double?,
+        longitude: Double?,
+        parking: List<Parking>,
+        choose: Boolean = false,
+    ) {
+        val options = mutableListOf<Pair<String, () -> Unit>>()
+
+        for (spot in parking) {
+            val name = spot.name.takeUnless { it.isBlank() || it.equals(area, true) }
+            val label = if (name == null) context.getString(R.string.directions_parking)
+            else context.getString(R.string.directions_parking_named, name)
+
+            options += label to {
+                open(context, spot.latitude, spot.longitude, context.getString(R.string.parking_for, area))
+            }
+        }
+
+        if (latitude != null && longitude != null) {
+            options += context.getString(R.string.directions_crag_itself) to {
+                open(context, latitude, longitude, area)
+            }
+        }
+
+        if (options.isEmpty()) return
+
+        val wantParking = Settings.directionsToParking(context) && parking.isNotEmpty()
+
+        when {
+            options.size == 1 -> options.first().second()
+            choose || (wantParking && parking.size > 1) ->
+                com.google.android.material.dialog.MaterialAlertDialogBuilder(context)
+                    .setTitle(R.string.directions_to)
+                    .setItems(options.map { it.first }.toTypedArray()) { _, which ->
+                        options[which].second()
+                    }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+            wantParking -> options.first().second()
+            else -> options.last().second()
+        }
+    }
+
     fun openUrl(context: Context, url: String) {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
 
