@@ -91,14 +91,21 @@ object PageScript {
     }
 
     /**
-     * Where topo and photo pixels may be fetched from: UKC's image host, and
-     * UKC itself. The links arrive from page script, so without this a hostile
-     * frame could point the downloader, cookies and all, anywhere.
+     * Whether a topo or photo link may be fetched at all: https only. The
+     * links come from page script, but only script holding this session's
+     * token can hand one over, which is the real guard. The host is not
+     * pinned: UKC's image host is not documented, and guessing it wrong would
+     * silently refuse every topo. Nor can a foreign host be used to leak the
+     * session, since CookieManager only ever returns a URL's own cookies.
      */
     fun isImageUrl(url: String): Boolean {
         val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return false
-        if (uri.scheme?.lowercase() != "https") return false
-        val host = uri.host?.lowercase() ?: return false
+        return uri.scheme?.lowercase() == "https" && !uri.host.isNullOrBlank()
+    }
+
+    /** UKC's own hosts, so an image served from anywhere else can be noted once. */
+    fun isUkcImageHost(url: String): Boolean {
+        val host = runCatching { Uri.parse(url).host?.lowercase() }.getOrNull() ?: return false
         return within(host, "ukc2.com") || within(host, "ukclimbing.com")
     }
 }

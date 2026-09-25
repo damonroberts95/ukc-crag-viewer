@@ -49,6 +49,7 @@ object TopoCache {
      * pool instead, and the import only waits for them at the very end.
      */
     private val pool = Executors.newFixedThreadPool(4)
+    private val unfamiliarNoted = java.util.concurrent.atomic.AtomicBoolean(false)
     private val pending = AtomicInteger(0)
 
     /** Photos still coming down. */
@@ -68,7 +69,7 @@ object TopoCache {
      *
      * The id and link come from page script, so both are checked: an id that
      * is not a number could name a path, and a link off UKC's image host
-     * would carry the session's cookies somewhere else. False when refused.
+     * must at least be https. False when refused.
      */
     fun enqueue(context: Context, topoId: String, url: String, force: Boolean = false): Boolean {
         val app = context.applicationContext
@@ -77,6 +78,11 @@ object TopoCache {
             AppLog.add(app, "topos: refused a photo link for topo ${topoId.take(20)} " +
                 "on ${runCatching { java.net.URI(url).host }.getOrNull()}")
             return false
+        }
+
+        // Worth knowing once which host UKC really serves pixels from.
+        if (!PageScript.isUkcImageHost(url) && unfamiliarNoted.compareAndSet(false, true)) {
+            AppLog.add(app, "topos: photos come from ${runCatching { java.net.URI(url).host }.getOrNull()}")
         }
 
         if (!force && isCached(app, topoId)) return true
@@ -140,7 +146,7 @@ object TopoCache {
         }
 
         val bytes = connection.inputStream.use { stream ->
-            // A redirect is followed for the CDN's sake, but not off UKC's hosts.
+            // A redirect is followed for the CDN's sake, but never down to plain http.
             if (!PageScript.isImageUrl(connection.url.toString())) null else stream.readBytes()
         }
         connection.disconnect()

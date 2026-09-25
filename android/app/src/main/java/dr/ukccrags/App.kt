@@ -25,7 +25,7 @@ import org.osmdroid.config.Configuration
 class App : Application() {
 
     companion object {
-        private const val TILE_KEEP_MS = 365L * 24 * 60 * 60 * 1000
+        private const val TILE_KEEP_MS = 30L * 24 * 60 * 60 * 1000
         const val CACHE_MAX_BYTES = 600L * 1024 * 1024
         private const val CACHE_TRIM_BYTES = 500L * 1024 * 1024
 
@@ -115,10 +115,11 @@ class App : Application() {
             osmdroidTileCache = filesDir.resolve("osm/tiles")
 
             // OpenStreetMap forbids downloading tiles in bulk but not keeping
-            // the ones you were sent, and their terrain does not move. Tiles
-            // normally expire in days, which quietly empties the cache between
-            // trips; a year of retention is what makes "I looked at this crag
-            // at home" still true in a valley with no signal.
+            // the ones you were sent. Expiry here only decides when a tile is
+            // fetched again while there is signal: osmdroid still draws an
+            // expired tile when the download fails, and it trims the cache by
+            // size alone, oldest first. So a month keeps new paths turning up
+            // without costing anything in a valley with no signal.
             expirationOverrideDuration = TILE_KEEP_MS
 
             // Room for a season of crags rather than the default handful of

@@ -329,7 +329,7 @@ object Walk {
      * follow the app's own user agent.
      */
     @Suppress("UNUSED_PARAMETER")
-    fun userAgent(context: Context): String = "UKC Crag Viewer (dr.ukccrags)"
+    fun userAgent(context: Context): String = App.userAgent(context)
 
     /** One Overpass call. `out geom` hands back the shape, so nodes need no second pass. */
     private fun fetch(
