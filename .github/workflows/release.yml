@@ -95,9 +95,12 @@ jobs:
               --title "$GITHUB_REF_NAME" --generate-notes
           fi
 
+      # Unzipped, so the phone downloads an APK it can install straight away
+      # rather than a zip holding one. With archive off, the file's own name
+      # is the artifact's name.
       - name: Upload artifact
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v7
         with:
-          name: ukc-crag-viewer-apk
           path: ${{ steps.apk.outputs.path }}
+          archive: false
