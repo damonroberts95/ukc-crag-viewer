@@ -33,12 +33,8 @@ class SettingsActivity : AppCompatActivity() {
         supportActionBar?.setTitle(R.string.settings)
         binding.toolbar.setNavigationOnClickListener { finish() }
 
-        toggle(
-            binding.directionsParking,
-            R.string.settings_directions_parking,
-            R.string.settings_directions_parking_summary,
-            Settings.directionsToParking(this),
-        ) { Settings.setDirectionsToParking(this, it) }
+        binding.directionsParking.title.setText(R.string.settings_directions_parking)
+        binding.directionsParking.root.setOnClickListener { chooseDirections() }
 
         toggle(
             binding.showParking,
@@ -64,9 +60,14 @@ class SettingsActivity : AppCompatActivity() {
         binding.clearPhotos.root.setOnClickListener { confirmClearPhotos() }
 
         // Topos come with each crag and cannot be fetched again without
-        // re-reading it, so they are reported here rather than offered up.
+        // re-reading it, so they are reported here rather than offered up —
+        // and the row does not ripple or take focus as if it did something.
         binding.topos.title.setText(R.string.settings_topos)
-        binding.topos.root.isClickable = false
+        binding.topos.root.apply {
+            isClickable = false
+            isFocusable = false
+            background = null
+        }
 
         row(binding.guide, R.string.settings_guide, R.string.settings_guide_summary) {
             Guide.show(this)
@@ -82,6 +83,44 @@ class SettingsActivity : AppCompatActivity() {
 
         showStorage()
         showUnits()
+        showDirections()
+    }
+
+    private fun directionsChoices(): List<Pair<Int, () -> Unit>> = listOf(
+        R.string.directions_choice_ask to { Settings.clearDirectionsChoice(this) },
+        R.string.directions_choice_parking to { Settings.setDirectionsToParking(this, true) },
+        R.string.directions_choice_crag to { Settings.setDirectionsToParking(this, false) },
+    )
+
+    private fun directionsIndex(): Int = when {
+        Settings.askDirections(this) -> 0
+        Settings.directionsToParking(this) -> 1
+        else -> 2
+    }
+
+    private fun showDirections() {
+        binding.directionsParking.summary.setText(directionsChoices()[directionsIndex()].first)
+    }
+
+    /**
+     * Three ways, not a switch: asking is the default, since a switch that
+     * starts on says a choice was made when none was.
+     */
+    private fun chooseDirections() {
+        val choices = directionsChoices()
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.settings_directions_parking)
+            .setSingleChoiceItems(
+                choices.map { getString(it.first) }.toTypedArray(),
+                directionsIndex(),
+            ) { dialog, which ->
+                choices[which].second()
+                showDirections()
+                dialog.dismiss()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun toggle(
@@ -118,7 +157,9 @@ class SettingsActivity : AppCompatActivity() {
                 if (isDestroyed) return@runOnUiThread
                 binding.clearMap.summary.text = getString(R.string.settings_clear_map_summary, map)
                 binding.clearPhotos.summary.text = getString(R.string.settings_clear_photos_summary, photos)
-                binding.topos.summary.text = getString(R.string.settings_topos_summary, topos, crags)
+                binding.topos.summary.text = resources.getQuantityString(
+                    R.plurals.settings_topos_summary, crags, topos.toInt(), crags,
+                )
             }
         }.start()
     }

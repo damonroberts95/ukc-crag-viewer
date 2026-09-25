@@ -27,7 +27,7 @@
 
             <include
                 android:id="@+id/directionsParking"
-                layout="@layout/item_setting_switch" />
+                layout="@layout/item_setting" />
 
             <include
                 android:id="@+id/showParking"

@@ -69,6 +69,17 @@
             android:textSize="13sp"
             android:text="@string/any_grade" />
 
+        <!-- The sort beside the filters, where it is seen, and remembered. -->
+        <com.google.android.material.chip.Chip
+            android:id="@+id/nearest"
+            style="@style/Widget.Material3.Chip.Filter"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_vertical"
+            android:layout_marginStart="8dp"
+            android:contentDescription="@string/nearest_first"
+            android:text="@string/sort_nearest" />
+
     </LinearLayout>
 
     <!-- Only while crags are queued: the same count as the notification, and

@@ -10,7 +10,8 @@
     android:paddingHorizontal="12dp"
     android:paddingVertical="6dp">
 
-    <!-- Held in the layout even when unticked, so the names stay in a column. -->
+    <!-- Held in the layout even when unticked, so the names stay in a column.
+         Ticked, sent-to-log and attempted share it, strongest first. -->
     <ImageView
         android:id="@+id/tick"
         android:layout_width="22dp"
@@ -68,9 +69,12 @@
         android:layout_marginStart="8dp"
         android:textSize="15sp" />
 
+    <!-- A minimum rather than a width, so three stars at a large font size
+         push the grade over instead of being cut off. -->
     <TextView
         android:id="@+id/stars"
-        android:layout_width="56dp"
+        android:layout_width="wrap_content"
+        android:minWidth="56dp"
         android:layout_height="wrap_content"
         android:layout_marginStart="8dp"
         android:textSize="13sp"

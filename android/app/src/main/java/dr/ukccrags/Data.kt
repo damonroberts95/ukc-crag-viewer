@@ -117,19 +117,53 @@ private fun JSONObject.arrayFor(vararg keys: String): JSONArray {
  * what was scraped and are never thrown away — re-reading four thousand pages
  * to rebuild something derived would be rude to UKC. [CragDb] is the index over
  * them: it answers the questions a list, a map or a search actually asks
- * without any of them holding a library in memory.
+ * without any of them holding a library in memory. Opening a crag reads its
+ * file; nothing else does.
  */
 object CragStore {
+
+    /**
+     * Held while a file and its rows are written together, so a rebuild reading
+     * files cannot put an older copy of a crag over one a queue batch has just
+     * saved.
+     */
+    internal val writeLock = Any()
+
+    /**
+     * True once [open] has run in this process. The first open after an
+     * update may be a database upgrade, which is too slow for the main thread,
+     * so screens reached first wait for this rather than opening it themselves.
+     */
+    @Volatile
+    var ready: Boolean = false
+        private set
 
     private fun storeDir(context: Context): File =
         File(context.filesDir, "crags").apply { mkdirs() }
 
+    private fun fileFor(context: Context, id: String): File = File(storeDir(context), "$id.json")
+
     /** Kept for callers that still say it; the database needs no invalidating. */
     fun invalidate() = Unit
 
-    /** Brings any crags scraped before the database existed into it. */
+    /**
+     * Opens the library, upgrading the database if this build needs to, and
+     * brings in any crag file the tables do not hold yet. Slow the first time
+     * after an update, so never on the main thread.
+     */
     fun open(context: Context) {
+        CragDb.prepare(context)
         CragDb.migrateIfNeeded(context, storeDir(context))
+        ready = true
+    }
+
+    /**
+     * Finishes whatever an upgrade left to do: re-deriving every row from the
+     * files, then compacting. Long, resumable, and harmless alongside
+     * everything else, so it runs after [open] rather than holding it up.
+     */
+    fun finishUpgrade(context: Context) {
+        CragDb.rebuildIfPending(context, storeDir(context))
     }
 
     /** Rows for a list or pins for a map: names, counts and positions. */
@@ -139,38 +173,72 @@ object CragStore {
 
     fun has(context: Context, id: String): Boolean = CragDb.has(context, id)
 
-    /** One whole crag, climbs and topos and all, parsed on demand. */
+    /**
+     * One whole crag by name, for callers that only have the name. Names are
+     * not unique; [byId] is the one to use wherever the id is known.
+     */
     fun byArea(context: Context, area: String): Crag? =
-        CragDb.fullByArea(context, area)?.let { parseJson(it) }
+        CragDb.idForArea(context, area)?.let { byId(context, it) }
 
-    fun byId(context: Context, id: String): Crag? =
-        CragDb.full(context, id)?.let { parseJson(it) }
+    /**
+     * One whole crag, climbs and topos and all, read from its own file. The
+     * database used to hold a second copy, which doubled the storage and could
+     * not be read back at all for a crag past two megabytes.
+     */
+    fun byId(context: Context, id: String): Crag? {
+        val file = fileFor(context, id)
+        if (!file.exists()) return null
+
+        return runCatching { file.readText() }.getOrNull()?.let { parseJson(it) }
+    }
+
+    /** When the crag's file last changed, so a screen can tell whether a refresh landed. */
+    fun stamp(context: Context, id: String): Long = fileFor(context, id).lastModified()
 
     fun parseJson(json: String): Crag? = runCatching { parse(JSONObject(json)) }.getOrNull()
 
     /** Deletes every imported crag, its topos and any saved photos. Ticks survive. */
     fun clear(context: Context) {
-        storeDir(context).listFiles().orEmpty().forEach { it.delete() }
-        CragDb.clear(context)
+        synchronized(writeLock) {
+            storeDir(context).listFiles().orEmpty().forEach { it.delete() }
+            CragDb.clear(context)
+        }
         TopoCache.clear(context)
         PhotoCache.clearAll(context)
     }
 
     /** Drops one crag and its topo photos, so a refresh starts from nothing. */
     fun forget(context: Context, crag: Crag) {
-        File(storeDir(context), "${crag.id}.json").delete()
+        synchronized(writeLock) {
+            fileFor(context, crag.id).delete()
+            CragDb.forget(context, crag.id)
+        }
         crag.topos.forEach { TopoCache.file(context, it.topoId.toString()).delete() }
-        CragDb.forget(context, crag.id)
     }
 
     /** Returns the crag it stored, or null when the JSON made no sense. */
     fun save(context: Context, json: String): Crag? = runCatching {
         val crag = parse(JSONObject(json))
 
-        File(storeDir(context), "${crag.id}.json").writeText(json)
-        CragDb.put(context, crag, json)
+        synchronized(writeLock) {
+            writeFile(fileFor(context, crag.id), json)
+            CragDb.put(context, crag)
+        }
         crag
     }.getOrNull()
+
+    /**
+     * Written beside and then moved over, so a crash mid-write cannot leave a
+     * half file as the only record of a crag.
+     */
+    internal fun writeFile(file: File, text: String) {
+        val partial = File(file.parentFile, file.name + ".part")
+        partial.writeText(text)
+        if (!partial.renameTo(file)) {
+            file.writeText(text)
+            partial.delete()
+        }
+    }
 
     private fun parse(root: JSONObject): Crag {
         val buttressArray = root.arrayFor("buttresses", "sectors")
@@ -271,80 +339,160 @@ object CragStore {
         }
 }
 
+/**
+ * One preference-backed set of climb URLs, one per process.
+ *
+ * Every screen and every page bridge used to build its own copy and write the
+ * whole set back. Two at once — a queue batch saving crags on the bridge
+ * thread while a logbook sync lands its ticks — each wrote the set it had
+ * read, and whichever finished last dropped the other's adds. Here there is
+ * one copy, changed under one lock and replaced rather than mutated, so a
+ * reader never sees it half-changed, and nothing is written when nothing
+ * changed.
+ */
+internal class UrlStore(private val file: String, private val key: String) {
+
+    @Volatile
+    private var urls: Set<String>? = null
+
+    private fun prefs(context: Context): SharedPreferences =
+        context.applicationContext.getSharedPreferences(file, Context.MODE_PRIVATE)
+
+    fun all(context: Context): Set<String> =
+        urls ?: synchronized(this) { urls ?: load(context) }
+
+    /** Inside the lock only. */
+    private fun load(context: Context): Set<String> =
+        HashSet(prefs(context).getStringSet(key, emptySet()).orEmpty()).also { urls = it }
+
+    private fun store(context: Context, next: Set<String>) {
+        prefs(context).edit().putStringSet(key, next).apply()
+        urls = next
+    }
+
+    /** How many were new. */
+    fun add(context: Context, more: Collection<String>): Int = synchronized(this) {
+        val current = urls ?: load(context)
+        val fresh = more.filterTo(HashSet()) { it.isNotBlank() && it !in current }
+        if (fresh.isEmpty()) return 0
+
+        store(context, HashSet(current).apply { addAll(fresh) })
+        fresh.size
+    }
+
+    /** How many were there to remove. */
+    fun remove(context: Context, gone: Collection<String>): Int = synchronized(this) {
+        val current = urls ?: load(context)
+        val present = gone.filterTo(HashSet()) { it in current }
+        if (present.isEmpty()) return 0
+
+        store(context, HashSet(current).apply { removeAll(present) })
+        present.size
+    }
+
+    fun replace(context: Context, all: Collection<String>): Int = synchronized(this) {
+        val next = all.filterTo(HashSet()) { it.isNotBlank() }
+        if (next != (urls ?: load(context))) store(context, next)
+        next.size
+    }
+}
+
+private val wishlistStore = UrlStore("wishlist", "climb_urls")
+private val attemptStore = UrlStore("attempts", "climb_urls")
+private val tickStore = UrlStore("ticks", "route_urls")
+private val toLogStore = UrlStore("to_log", "climb_urls")
+
 /** Climbs on UKC's wishlist, keyed by URL like the ticks. */
 class Wishlist(context: Context) {
 
-    private val prefs: SharedPreferences =
-        context.getSharedPreferences("wishlist", Context.MODE_PRIVATE)
+    private val app = context.applicationContext
 
-    private val wanted: MutableSet<String> =
-        prefs.getStringSet(KEY, emptySet())!!.toMutableSet()
+    fun has(url: String): Boolean = wishlistStore.all(app).contains(url)
 
-    fun has(url: String): Boolean = wanted.contains(url)
+    fun isEmpty(): Boolean = wishlistStore.all(app).isEmpty()
 
-    fun isEmpty(): Boolean = wanted.isEmpty()
+    fun all(): Set<String> = wishlistStore.all(app)
 
     /** UKC owns this list, so a sync replaces it rather than adding to it. */
-    fun replaceWith(urls: Collection<String>): Int {
-        wanted.clear()
-        wanted.addAll(urls)
-        prefs.edit().putStringSet(KEY, wanted.toSet()).apply()
-        return wanted.size
-    }
-
-    private companion object {
-        const val KEY = "climb_urls"
-    }
+    fun replaceWith(urls: Collection<String>): Int = wishlistStore.replace(app, urls)
 }
 
 /** Climbs tried but not topped, so they read differently from untouched ones. */
 class Attempts(context: Context) {
 
-    private val prefs: SharedPreferences =
-        context.getSharedPreferences("attempts", Context.MODE_PRIVATE)
+    private val app = context.applicationContext
 
-    private val tried: MutableSet<String> =
-        prefs.getStringSet(KEY, emptySet())!!.toMutableSet()
-
-    fun has(url: String): Boolean = tried.contains(url)
+    fun has(url: String): Boolean = attemptStore.all(app).contains(url)
 
     fun addAll(urls: Collection<String>) {
-        if (urls.isEmpty()) return
-        tried.addAll(urls)
-        prefs.edit().putStringSet(KEY, tried.toSet()).apply()
+        attemptStore.add(app, urls)
     }
+}
 
-    private companion object {
-        const val KEY = "climb_urls"
+/**
+ * Climbs sent at the crag and not yet in the logbook.
+ *
+ * The app never logs anything itself, and at the crag there is often no
+ * signal to log with anyway. So the phone keeps the reader's own note — sent,
+ * log it later — and the to-log list takes them to each climb's UKC page once
+ * there is. A logbook sync that finds the tick clears the note.
+ */
+class ToLog(context: Context) {
+
+    private val app = context.applicationContext
+
+    fun has(url: String): Boolean = toLogStore.all(app).contains(url)
+
+    fun all(): Set<String> = toLogStore.all(app)
+
+    /** Flips the note, returning whether it is now set. */
+    fun toggle(url: String): Boolean =
+        if (has(url)) {
+            toLogStore.remove(app, listOf(url))
+            false
+        } else {
+            toLogStore.add(app, listOf(url))
+            true
+        }
+
+    fun remove(url: String) {
+        toLogStore.remove(app, listOf(url))
     }
 }
 
 /** Ticked climbs, keyed by climb URL so they survive re-imports of a crag. */
 class Ticks(context: Context) {
 
-    private val prefs: SharedPreferences =
-        context.getSharedPreferences("ticks", Context.MODE_PRIVATE)
+    private val app = context.applicationContext
 
-    private val ticked: MutableSet<String> =
-        prefs.getStringSet(KEY, emptySet())!!.toMutableSet()
+    fun has(url: String): Boolean = tickStore.all(app).contains(url)
 
-    fun has(url: String): Boolean = ticked.contains(url)
+    fun all(): Set<String> = tickStore.all(app)
 
-    fun countIn(crag: Crag): Int =
-        crag.buttresses.sumOf { buttress -> buttress.climbs.count { has(it.url) } }
+    fun countIn(crag: Crag): Int {
+        val ticked = all()
+        return crag.buttresses.sumOf { buttress -> buttress.climbs.count { it.url in ticked } }
+    }
 
     /**
      * The same count for a crag nobody has read yet: its climb URLs come from
      * the index rather than from parsing the crag.
      */
-    fun countIn(context: Context, cragId: String): Int =
-        CragDb.climbUrls(context, cragId).count { has(it) }
+    fun countIn(context: Context, cragId: String): Int {
+        val ticked = all()
+        return CragDb.climbUrls(context, cragId).count { it in ticked }
+    }
 
-    /** Folds in a logbook sync, keeping what earlier syncs already found. */
+    /**
+     * Folds in a logbook sync, keeping what earlier syncs already found. A
+     * climb the logbook now holds no longer needs logging, so its to-log note
+     * goes with it.
+     */
     fun addAll(urls: Collection<String>): Int {
-        val added = urls.count { ticked.add(it) }
-        prefs.edit().putStringSet(KEY, ticked.toSet()).apply()
-        return added
+        if (urls.isEmpty()) return 0
+
+        toLogStore.remove(app, urls)
+        return tickStore.add(app, urls)
     }
 
     /**
@@ -352,20 +500,32 @@ class Ticks(context: Context) {
      * Matching is on crag plus climb name, loosened to ignore case, accents
      * and punctuation, since a logbook entry and a crag page do not always
      * agree on an apostrophe.
+     *
+     * Only the crags the logbook names are read. A name can stand for more
+     * than one climb — a crag listing the same line twice, or two crags
+     * sharing a name — so every one of them is ticked, rather than whichever
+     * happened to be read last.
      */
     fun addByName(context: Context, entries: List<Pair<String, String>>): Int {
-        val byCrag = HashMap<String, HashMap<String, String>>()
+        val wanted = HashMap<String, MutableSet<String>>()
+        for ((cragName, climbName) in entries) {
+            wanted.getOrPut(loosen(cragName)) { HashSet() }.add(loosen(climbName))
+        }
 
-        // Crag name, climb name and URL for the whole library — three strings a
-        // climb, rather than every climb object.
-        for ((area, name, url) in CragDb.climbUrlsByName(context)) {
-            byCrag.getOrPut(loosen(area)) { HashMap() }[loosen(name)] = url
+        val idsByArea = HashMap<String, MutableList<String>>()
+        for ((id, area) in CragDb.cragNames(context)) {
+            val key = loosen(area)
+            if (key in wanted) idsByArea.getOrPut(key) { mutableListOf() }.add(id)
         }
 
         val found = mutableListOf<String>()
 
-        for ((cragName, climbName) in entries) {
-            byCrag[loosen(cragName)]?.get(loosen(climbName))?.let { found.add(it) }
+        for ((area, ids) in idsByArea) {
+            val names = wanted[area] ?: continue
+
+            for ((name, url) in CragDb.climbNamesAt(context, ids)) {
+                if (loosen(name) in names) found.add(url)
+            }
         }
 
         return addAll(found)
@@ -374,8 +534,4 @@ class Ticks(context: Context) {
     private fun loosen(value: String): String = java.text.Normalizer
         .normalize(value.lowercase(), java.text.Normalizer.Form.NFD)
         .replace(Regex("[^a-z0-9]"), "")
-
-    private companion object {
-        const val KEY = "route_urls"
-    }
 }

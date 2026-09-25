@@ -4,6 +4,11 @@
     <!-- Amber dark enough to read on a light surface. -->
     <color name="stars">#8A6100</color>
     <color name="on_brand">#FFFFFF</color>
+    <!-- The brand navy lifted for dark surfaces, and the ink that reads on it. -->
+    <color name="brand_light">#A8C7F0</color>
+    <color name="on_brand_light">#0C1D33</color>
+    <!-- Sent at the crag, not logged yet: the tick's family, a step apart. -->
+    <color name="to_log">#00695C</color>
     <!-- Green for a logbook tick, dark enough to read on a light surface. -->
     <color name="ticked">#2E7D32</color>
     <!-- Attempted but not topped: readable on a light surface. -->

@@ -48,10 +48,6 @@ object Lists {
         parsed.length()
     }.getOrDefault(0)
 
-    /** Which lists hold this climb, by name. */
-    fun holding(context: Context, climbUrl: String): List<String> =
-        load(context).filter { it.climbs.contains(climbUrl) }.map { it.name }
-
     fun clear(context: Context) {
         file(context).delete()
     }

@@ -6,9 +6,9 @@
       where navy on charcoal cannot be read, so night mode gets a light tint.
     -->
     <style name="Theme.UkcCrags" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">#A8C7F0</item>
-        <item name="colorOnPrimary">#0C1D33</item>
-        <item name="colorSecondary">#A8C7F0</item>
-        <item name="colorOnSecondary">#0C1D33</item>
+        <item name="colorPrimary">@color/brand_light</item>
+        <item name="colorOnPrimary">@color/on_brand_light</item>
+        <item name="colorSecondary">@color/brand_light</item>
+        <item name="colorOnSecondary">@color/on_brand_light</item>
     </style>
 </resources>

@@ -44,6 +44,19 @@ class TopoView @JvmOverloads constructor(
     /** Called when a tap lands on a line, or on nothing. */
     var onTap: ((TopoLine?) -> Unit)? = null
 
+    /** Called when a line is held: the way into that climb from the photo. */
+    var onLongPress: ((TopoLine) -> Unit)? = null
+
+    /*
+     * Sizes in pixels were set on one phone and drew hairlines on a denser
+     * one. Lines scale with the screen; the label scales with the reader's
+     * font size too, and everything around the label is measured off it.
+     */
+    private val density = resources.displayMetrics.density
+    private val thinLine = LINE_DP * density
+    private val thickLine = FOCUSED_LINE_DP * density
+    private val casing = CASING_DP * density
+
     /** Grade for each climb id, so a line can be read without opening it. */
     var grades: Map<Long, String> = emptyMap()
         set(value) {
@@ -84,7 +97,9 @@ class TopoView @JvmOverloads constructor(
 
     private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
-        textSize = 34f
+        textSize = android.util.TypedValue.applyDimension(
+            android.util.TypedValue.COMPLEX_UNIT_SP, LABEL_SP, resources.displayMetrics,
+        )
         isFakeBoldText = true
     }
 
@@ -157,6 +172,13 @@ class TopoView @JvmOverloads constructor(
                 focus(line?.climbId)
                 onTap?.invoke(line)
                 return true
+            }
+
+            override fun onLongPress(event: MotionEvent) {
+                val line = lineAt(event.x, event.y) ?: return
+                focus(line.climbId)
+                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                onLongPress?.invoke(line)
             }
 
             override fun onDoubleTap(event: MotionEvent): Boolean {
@@ -346,8 +368,8 @@ class TopoView @JvmOverloads constructor(
             val highlighted = index == focused || focused == -1
             stroke.color = colourOf(index)
             stroke.alpha = if (highlighted) 255 else 80
-            stroke.strokeWidth = if (index == focused) 11f else 6f
-            outline.strokeWidth = stroke.strokeWidth + 4f
+            stroke.strokeWidth = if (index == focused) thickLine else thinLine
+            outline.strokeWidth = stroke.strokeWidth + casing
             outline.alpha = if (highlighted) 160 else 60
 
             canvas.drawPath(path, outline)
@@ -374,23 +396,26 @@ class TopoView @JvmOverloads constructor(
         val y = placeY(start)
 
         val text = labelFor(line)
-        val swatch = label.textSize * 0.55f
+        val size = label.textSize
+        val pad = size * 0.24f
+        val swatch = size * 0.55f
         val width = label.measureText(text) + swatch * 2.2f
-        val left = x.coerceIn(frame.left, (frame.right - width - 16f).coerceAtLeast(frame.left))
-        var top = (y - 48f).coerceAtLeast(frame.top + 34f)
+        val left = x.coerceIn(frame.left, (frame.right - width - pad * 2).coerceAtLeast(frame.left))
+        var top = (y - size * 1.4f).coerceAtLeast(frame.top + size)
 
         // Nudge down past anything already there, so two close starts stay legible.
-        val box = RectF(left - 8f, top - 34f, left + width + 8f, top + 10f)
+        val box = RectF(left - pad, top - size, left + width + pad, top + size * 0.3f)
+        val step = size * 1.3f
         var guard = 0
         while (placed.any { RectF.intersects(it, box) } && guard < 12) {
-            top += 44f
-            box.offset(0f, 44f)
+            top += step
+            box.offset(0f, step)
             guard++
         }
 
         placed.add(RectF(box))
 
-        canvas.drawRoundRect(box, 8f, 8f, labelBack)
+        canvas.drawRoundRect(box, pad, pad, labelBack)
 
         swatchPaint.color = colour
         canvas.drawCircle(left + swatch * 0.6f, top - label.textSize * 0.3f, swatch, swatchPaint)
@@ -420,6 +445,11 @@ class TopoView @JvmOverloads constructor(
 
         /** How far off a line a tap can land, in dp — roughly a fingertip. */
         const val REACH_DP = 28f
+
+        const val LINE_DP = 2.25f
+        const val FOCUSED_LINE_DP = 4f
+        const val CASING_DP = 1.5f
+        const val LABEL_SP = 13f
 
         const val MAX_ZOOM = 8f
         const val DOUBLE_TAP_ZOOM = 3f

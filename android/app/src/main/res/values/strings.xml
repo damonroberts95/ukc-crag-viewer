@@ -1,20 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">UKC Crag Viewer</string>
-    <string name="crags">Crags</string>
     <string name="directions">Directions</string>
     <string name="directions_to_crag">Directions to crag</string>
     <string name="no_pin">no pin published</string>
     <string name="no_maps_app">No maps app installed</string>
     <string name="no_browser">No browser installed</string>
     <string name="search_hint">Filter climbs, grades, buttresses</string>
-    <string name="starred">★</string>
     <string name="no_matches">Nothing matches.</string>
-    <string name="no_crags">No crags yet.\n\nImport them from UKClimbing with the button below, then sync your logbook to bring your ticks across.</string>
+    <string name="no_crags">No crags yet.\n\nAdd them from UKClimbing with the button below, then sync your logbook to bring your ticks across.</string>
+    <string name="library_opening">Opening your library…</string>
+    <string name="library_not_ready">Still opening your library — try again in a moment.</string>
     <string name="view_on_ukc">View crag on UKClimbing</string>
-    <string name="crag_detail">%1$d climbs · %2$d buttresses · %3$d located</string>
+    <!-- Used by the map's crag sheet. The crag list uses crag_ticked. -->
     <string name="crag_progress">%1$d / %2$d climbs ticked</string>
-    <string name="crag_progress_long">%1$d of %2$d climbs ticked · %3$d buttresses</string>
+    <plurals name="crag_ticked">
+        <item quantity="one">%1$d / %2$d climb ticked</item>
+        <item quantity="other">%1$d / %2$d climbs ticked</item>
+    </plurals>
+    <plurals name="crag_progress_long">
+        <item quantity="one">%1$d of %2$d climb ticked · %3$s</item>
+        <item quantity="other">%1$d of %2$d climbs ticked · %3$s</item>
+    </plurals>
     <string name="route_meta">%1$s · %2$s</string>
     <plurals name="crags_found">
         <item quantity="one">%d crag</item>
@@ -24,13 +31,17 @@
         <item quantity="one">%d climb</item>
         <item quantity="other">%d climbs</item>
     </plurals>
+    <string name="climbs_capped">First %1$d climbs — type more to narrow them</string>
+    <plurals name="stars">
+        <item quantity="one">%d star</item>
+        <item quantity="other">%d stars</item>
+    </plurals>
     <string name="browse_crags">Browse crags on UKClimbing</string>
     <string name="crag_index_url">https://www.ukclimbing.com/logbook/crags/</string>
     <plurals name="logs">
         <item quantity="one">%d log</item>
         <item quantity="other">%d logs</item>
     </plurals>
-    <string name="rotate_lines">Rotate</string>
     <string name="rotate_lines_long">Rotate lines a quarter turn</string>
     <string name="topo_names">Names</string>
     <string name="ticked">Ticked in logbook</string>
@@ -38,36 +49,41 @@
     <string name="on_wishlist">On your UKC wishlist</string>
     <string name="share_climb">Share climb</string>
     <string name="share_via">Share climb</string>
+    <string name="share_climb_text">%1$s (%2$s) — %3$s\n%4$s</string>
     <string name="climb_height">%1$dm</string>
     <string name="climb_pitches">%1$d pitches</string>
     <string name="no_description">No description on UKC.</string>
     <string name="has_photos">Has photos on UKC</string>
     <string name="see_photos">Photos on UKC</string>
-    <string name="see_photos_n">%1$d photos on UKC</string>
+    <plurals name="see_photos_n">
+        <item quantity="one">%d photo on UKC</item>
+        <item quantity="other">%d photos on UKC</item>
+    </plurals>
     <string name="crag_notes">Crag notes</string>
-    <string name="read_notes">READ FULL NOTES</string>
+    <string name="read_notes">Read full notes</string>
     <string name="add_to_logbook">Add to Logbook</string>
     <string name="log_ready">Press “Add to Logbook” to log this climb</string>
     <string name="log_not_ready">No logbook button on this page. Sign in to UKC and try again.</string>
-    <string name="topo_previous">Prev</string>
+    <string name="topo_previous">Previous</string>
     <string name="topo_next">Next</string>
     <string name="topo_of">Topo %1$d of %2$d</string>
-    <string name="topo_climb">%1$s — tap elsewhere to clear</string>
+    <string name="topo_climb">%1$s — tap here for the climb</string>
     <string name="topo_offline">Photo not cached — refresh this crag to fetch it.</string>
     <string name="topos">Topos</string>
-    <string name="addlogs_url">https://www.ukclimbing.com/logbook/addlogs.php</string>
+    <!-- Used by the map's crag sheet. This side uses the topos_n plural. -->
     <string name="topo_count">%1$d topos</string>
+    <plurals name="topos_n">
+        <item quantity="one">%d topo</item>
+        <item quantity="other">%d topos</item>
+    </plurals>
     <string name="log_ascent">Log ascent on UKC</string>
     <string name="open_climb">Open climb on UKC</string>
     <string name="show_on_topo">Show on topo</string>
-    <string name="cache_topos">Download topo photos</string>
     <string name="caching_photos">Downloading topo photos</string>
     <plurals name="photos_left">
         <item quantity="one">%d photo left</item>
         <item quantity="other">%d photos left</item>
     </plurals>
-    <string name="caching_topos">Downloading topos… %1$d / %2$d</string>
-    <string name="topos_cached">%1$d topo photos ready offline</string>
     <plurals name="topo_lines">
         <item quantity="one">%d climb drawn — tap a line</item>
         <item quantity="other">%d climbs drawn — tap a line</item>
@@ -138,14 +154,32 @@
     <string name="filter_list">Filter this list</string>
     <string name="ticklists">Ticklists</string>
     <string name="import_list_crags">Import this list’s crags</string>
-    <string name="list_import_ask">%1$d crags in this list are not in your library yet. Import them?</string>
+    <plurals name="list_import_ask">
+        <item quantity="one">%d crag in this list is not in your library yet. Import it?</item>
+        <item quantity="other">%d crags in this list are not in your library yet. Import them?</item>
+    </plurals>
     <string name="list_all_held">Every crag in this list is already in your library.</string>
     <string name="no_lists">No ticklists yet. Sync your logbook to fetch them.</string>
-    <string name="list_held">%1$d of %2$d climbs in your crags</string>
+    <plurals name="list_held">
+        <item quantity="one">%1$d of %2$d climb in your crags</item>
+        <item quantity="other">%1$d of %2$d climbs in your crags</item>
+    </plurals>
+    <string name="list_done">%1$d/%2$d</string>
     <plurals name="lists">
         <item quantity="one">%d list</item>
         <item quantity="other">%d lists</item>
     </plurals>
+    <string name="wishlist">Wishlist</string>
+    <string name="wishlist_empty">Nothing from your wishlist is in your crags. Sync your logbook to fetch it, or add the crags it names.</string>
+    <string name="to_log">To log</string>
+    <string name="to_log_summary">Climbs you marked as sent, waiting to go in your logbook</string>
+    <string name="to_log_empty">Nothing waiting to be logged. Mark a climb as sent from its page in a crag, and it waits here until you log it on UKC.</string>
+    <string name="to_log_hint">Tap a climb to open its UKC page at the logbook button.</string>
+    <string name="sent_to_log">Sent — to log</string>
+    <string name="mark_sent">Sent it — log later</string>
+    <string name="unmark_sent">Sent, to log — remove this mark</string>
+    <string name="marked_sent">Marked as sent. It waits under Ticklists → To log.</string>
+    <string name="remove_to_log">Remove from To log</string>
     <string name="climb_type">Type</string>
     <string name="sort_climbs">Sort climbs</string>
     <string name="sort_ukc">UKC order (reset)</string>
@@ -155,7 +189,10 @@
     <string name="all_types">All types</string>
     <string name="grade">Grade</string>
     <string name="any_grade">Any grade</string>
-    <string name="grades_chosen">%1$d grades</string>
+    <plurals name="grades_chosen">
+        <item quantity="one">%d grade</item>
+        <item quantity="other">%d grades</item>
+    </plurals>
     <string name="miles_away">%.1f miles away</string>
     <string name="starting">Starting…</string>
     <string name="run_in_background">Back to crags</string>
@@ -178,12 +215,24 @@
     <string name="queue_info_counts">Read %1$d · failed %2$d · nothing to store %3$d</string>
     <string name="queue_info_batches">Batches %1$d · last took %2$s · reading for %3$s</string>
     <string name="queue_info_photos">Topo photos still downloading: %1$d</string>
-    <string name="queue_info_throttle">UKC pushed back %1$d times · spacing last set to %2$d ms</string>
+    <plurals name="queue_info_throttle">
+        <item quantity="one">UKC pushed back %1$d time · spacing last set to %2$d ms</item>
+        <item quantity="other">UKC pushed back %1$d times · spacing last set to %2$d ms</item>
+    </plurals>
     <string name="queue_info_open">Reads only while the app is open and the screen is on.</string>
     <string name="queue_info_log">Log</string>
     <string name="queue_info_log_empty">Nothing from the queue yet.</string>
     <string name="queue_info_read_now">Read now</string>
     <string name="queue_forget">Forget the crags still queued</string>
+    <plurals name="queue_forget_confirm">
+        <item quantity="one">%d crag is still waiting to be read. Forget it? Crags already read stay in your library.</item>
+        <item quantity="other">%d crags are still waiting to be read. Forget them? Crags already read stay in your library.</item>
+    </plurals>
+    <string name="queue_forget_go">Forget</string>
+    <string name="queue_cleared">Queue cleared</string>
+    <string name="duration_hm">%1$dh %2$dm</string>
+    <string name="duration_ms">%1$dm %2$ds</string>
+    <string name="duration_s">%1$ds</string>
     <plurals name="queued">
         <item quantity="one">%d crag queued</item>
         <item quantity="other">%d crags queued</item>
@@ -194,7 +243,10 @@
     </plurals>
     <string name="importing_named">%1$d of %2$d · %3$s</string>
     <string name="clear_crags">Clear all crags</string>
-    <string name="clear_crags_warning">Deletes all %1$d saved crags and their topo photos. Your ticks are kept.</string>
+    <plurals name="clear_crags_warning">
+        <item quantity="one">Deletes your %d saved crag and its topo photos. Your ticks are kept.</item>
+        <item quantity="other">Deletes all %d saved crags and their topo photos. Your ticks are kept.</item>
+    </plurals>
     <string name="cleared">Crags cleared.</string>
     <string name="refresh_this_crag">Refresh this crag</string>
     <string name="refreshing_one">Refreshing %1$s…</string>
@@ -222,12 +274,9 @@
         <item quantity="other">%d buttresses</item>
     </plurals>
     <string name="crag_detail_located">%1$s · %2$s · %3$d located</string>
-    <string name="add_crags">Add crags from UKC</string>
+    <string name="add_crags">Add crags</string>
     <string name="import_crag">Import this crag</string>
-    <string name="import_results">Import all results</string>
     <string name="browse_title">Add crags</string>
-    <string name="login_hint">Log in to UKC here if you want member-only data. Your details go straight to ukclimbing.com.</string>
-    <string name="imported">Imported %1$s (%2$d routes)</string>
     <string name="browser_died">The browser ran out of room and closed. Nothing imported was lost — try a smaller search.</string>
     <string name="import_failed">Nothing to import on this page</string>
     <string name="importing">Importing %1$d of %2$d…</string>
@@ -237,12 +286,12 @@
         <item quantity="other">Import all %d crags</item>
     </plurals>
     <string name="nearest_first">Nearest first</string>
+    <string name="sort_nearest">Nearest</string>
     <string name="location_blocked">Android has stopped asking, so location has to be turned on in Settings.</string>
     <string name="open_settings">Open settings</string>
     <string name="need_location">Location permission needed to sort by distance</string>
     <string name="no_location">No location fix yet — try again in a moment</string>
     <string name="km_away">%.1f km away</string>
-    <string name="import_all_hint">Imports every crag on this page, with all its climbs</string>
     <string name="backing_off">Rate limited — slowing to %1$ds</string>
     <string name="debug_log">Log</string>
     <string name="log_empty">Nothing logged yet. Imports, syncs and the reasons they stop appear here.</string>
@@ -261,6 +310,7 @@
     <string name="update_download_failed">Download failed. You can fetch the APK from the release page instead.</string>
     <string name="update_needs_install_permission">Android has to allow this app to install apps before it can update itself. Turn it on in Settings, then check again.</string>
     <string name="update_install_failed">Nothing on this phone could install the APK.</string>
+    <string name="close">Close</string>
     <!-- Parking and directions -->
     <string name="directions_to">Directions to</string>
     <string name="directions_to_parking">Directions to parking</string>
@@ -275,16 +325,24 @@
 
     <!-- Saved photos -->
     <string name="photos">Photos</string>
-    <string name="photos_saved_n">%1$d photos saved</string>
+    <plurals name="photos_saved_n">
+        <item quantity="one">%d photo saved</item>
+        <item quantity="other">%d photos saved</item>
+    </plurals>
     <string name="save_photos">Save photos offline</string>
     <string name="save_photos_go">Save</string>
     <string name="save_photos_all">Crag and climbs</string>
     <string name="save_photos_gallery">Crag only</string>
     <string name="save_photos_crag_only">Saves the crag’s own photos from UKC so they open with no signal. No climb here has photos of its own.</string>
     <string name="save_photos_again">Everything here has been saved already. Saving again looks for photos added since, and only downloads new ones.</string>
-    <string name="save_photos_cost">The crag’s own photos are one request. %1$d climbs here have %2$d photos between them, which means reading each climb’s page from UKC — about %3$d min, gently paced — and roughly %4$d MB on the phone.
+    <plurals name="save_photos_cost">
+        <item quantity="one">The crag’s own photos are one request. %1$d climb here has %2$d photos, which means reading its page from UKC — about %3$d min, gently paced — and roughly %4$d MB on the phone.
 
-Keep this screen open while it runs. Stopping loses nothing: the next run carries on.</string>
+Keep this screen open while it runs. Stopping loses nothing: the next run carries on.</item>
+        <item quantity="other">The crag’s own photos are one request. %1$d climbs here have %2$d photos between them, which means reading each climb’s page from UKC — about %3$d min, gently paced — and roughly %4$d MB on the phone.
+
+Keep this screen open while it runs. Stopping loses nothing: the next run carries on.</item>
+    </plurals>
     <string name="photos_starting">Saving photos…</string>
     <string name="photos_reading">Reading climbs for photos… %1$d of %2$d · tap to stop</string>
     <string name="photos_stopping">Stopping after the climbs being read now…</string>
@@ -294,9 +352,15 @@ Keep this screen open while it runs. Stopping loses nothing: the next run carrie
         <item quantity="one">%d new photo saved</item>
         <item quantity="other">%d new photos saved</item>
     </plurals>
-    <string name="photos_failed">%1$d new photos saved, then it stopped: %2$s. Save again to carry on.</string>
+    <plurals name="photos_failed">
+        <item quantity="one">%1$d new photo saved, then it stopped: %2$s. Save again to carry on.</item>
+        <item quantity="other">%1$d new photos saved, then it stopped: %2$s. Save again to carry on.</item>
+    </plurals>
     <string name="delete_photos">Delete saved photos</string>
-    <string name="delete_photos_warning">Deletes the %1$d photos saved for this crag (%2$d MB). Its topos are kept.</string>
+    <plurals name="delete_photos_warning">
+        <item quantity="one">Deletes the %1$d photo saved for this crag (%2$d MB). Its topos are kept.</item>
+        <item quantity="other">Deletes the %1$d photos saved for this crag (%2$d MB). Its topos are kept.</item>
+    </plurals>
     <string name="photos_none">No photos saved here.</string>
     <string name="photo_of">%1$d of %2$d</string>
 
@@ -307,8 +371,10 @@ Keep this screen open while it runs. Stopping loses nothing: the next run carrie
     <string name="settings_storage">Storage</string>
     <string name="settings_logbook">Logbook</string>
     <string name="settings_help">Help</string>
-    <string name="settings_directions_parking">Directions go to parking</string>
-    <string name="settings_directions_parking_summary">When UKC gives a car park, crag directions take you there instead of to the crag pin. Long-press the button to pick either.</string>
+    <string name="settings_directions_parking">Crag directions go to</string>
+    <string name="directions_choice_ask">Ask each time, when a crag has both a car park and a pin</string>
+    <string name="directions_choice_parking">The car park, when UKC gives one</string>
+    <string name="directions_choice_crag">The crag pin</string>
     <string name="settings_show_parking_summary">Draw car parks on the map, labelled with their crag. Also in the map’s own menu.</string>
     <string name="settings_weekly_sync">Weekly logbook sync</string>
     <string name="settings_weekly_sync_summary">Once a week, on opening the app, read your UKC logbook for new ticks. Needs you signed in.</string>
@@ -324,7 +390,10 @@ Keep this screen open while it runs. Stopping loses nothing: the next run carrie
     <string name="settings_clear_photos_summary">%1$d MB of crag and climb photos</string>
     <string name="settings_clear_photos_warning">Deletes the photos saved for every crag. Topos are kept. Each crag can save its photos again from its own menu.</string>
     <string name="settings_topos">Crags and topos</string>
-    <string name="settings_topos_summary">%1$d MB of topo photos across %2$d crags, kept with the crags</string>
+    <plurals name="settings_topos_summary">
+        <item quantity="one">%1$d MB of topo photos for %2$d crag, kept with it</item>
+        <item quantity="other">%1$d MB of topo photos across %2$d crags, kept with the crags</item>
+    </plurals>
     <string name="settings_guide">How to add crags</string>
     <string name="settings_guide_summary">The getting-started guide</string>
     <string name="settings_log_summary">What imports, syncs and photo saves did, and why they stopped</string>
@@ -332,7 +401,7 @@ Keep this screen open while it runs. Stopping loses nothing: the next run carrie
 
     <!-- First-run guide -->
     <string name="guide_title">Getting crags in</string>
-    <string name="guide_body">1. Tap Add crags from UKC. UKC’s own crag search opens inside the app.
+    <string name="guide_body">1. Tap Add crags. UKC’s own crag search opens inside the app.
 
 2. Type a place or postcode into the location box, choose a distance, and search. That is all — there is no need to open or pick crags one at a time.
 
