@@ -5,6 +5,8 @@
     <!-- On a dark surface the amber has to go lighter to stay legible. -->
     <color name="stars">#FFC24B</color>
     <color name="on_brand">#FFFFFF</color>
+    <!-- Lifted like the tick, so the to-log mark reads on a dark row. -->
+    <color name="to_log">#80CBC4</color>
     <!-- The tick green has to lift off a dark surface too. -->
     <color name="ticked">#7BD88F</color>
     <!-- The same marker, lifted for a dark surface. -->

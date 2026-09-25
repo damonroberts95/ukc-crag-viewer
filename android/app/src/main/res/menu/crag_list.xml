@@ -32,12 +32,6 @@
         app:showAsAction="never" />
 
     <item
-        android:id="@+id/nearest"
-        android:title="@string/nearest_first"
-        android:checkable="true"
-        app:showAsAction="never" />
-
-    <item
         android:id="@+id/logbook_group"
         android:title="@string/menu_logbook"
         app:showAsAction="never">

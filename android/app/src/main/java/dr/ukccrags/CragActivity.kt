@@ -1,27 +1,37 @@
 package dr.ukccrags
 
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.doAfterTextChanged
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dr.ukccrags.databinding.ActivityCragBinding
-import dr.ukccrags.databinding.DialogClimbBinding
 import dr.ukccrags.databinding.ItemRouteBinding
 import dr.ukccrags.databinding.ItemSectorBinding
 
 /** One row in the flattened sector/route list. */
 private sealed interface Row {
     data class ButtressRow(val buttress: Buttress, val shown: Int) : Row
-    /** [buttress] is set only when the list is sorted and the headers are gone. */
-    data class ClimbRow(val climb: Climb, val buttress: String = "") : Row
+
+    /**
+     * [buttress] is set only when the list is sorted and the headers are gone.
+     * [mark] is carried in the row so a change of tick or note redraws it.
+     */
+    data class ClimbRow(val climb: Climb, val buttress: String = "", val mark: Mark, val wished: Boolean) : Row
 }
+
+/** What the tick slot on a climb row shows, strongest first. */
+private enum class Mark { TICKED, TO_LOG, ATTEMPTED, NONE }
 
 /** How the climb list is ordered. UKC's own order is the default. */
 private enum class Sort { UKC, NAME, GRADE, STARS }
@@ -37,9 +47,17 @@ class CragActivity : AppCompatActivity() {
         climbCount = 0,
         buttresses = emptyList(),
     )
+
+    /** Null until the crag has been read, so nothing acts on the empty stand-in above. */
+    private var loaded = false
+
+    /** When the crag's file was read, so coming back only re-reads a refreshed one. */
+    private var readStamp = 0L
+
     private lateinit var ticks: Ticks
     private lateinit var attempts: Attempts
     private lateinit var wishlist: Wishlist
+    private lateinit var toLog: ToLog
 
     private val adapter = RowAdapter()
 
@@ -47,42 +65,84 @@ class CragActivity : AppCompatActivity() {
     private var type: String = ""
     private var sort: Sort = Sort.UKC
 
+    /**
+     * Set when this visit came for one climb. The remembered type filter is
+     * then left alone for the visit: a trad climb found by search must not
+     * open hidden behind the bouldering filter set last time.
+     */
+    private var cameForClimb = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         binding = ActivityCragBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        applySystemBarInsets(binding.root)
+        applySystemBarInsets(binding.root, ime = true)
 
         setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         binding.toolbar.setNavigationOnClickListener { finish() }
 
-        val area = intent.getStringExtra(EXTRA_AREA)
-        val found = CragStore.byArea(this, area.orEmpty())
-
-        if (found == null) {
-            finish()
-            return
-        }
-
-        crag = found
         ticks = Ticks(this)
         attempts = Attempts(this)
         wishlist = Wishlist(this)
-
-        supportActionBar?.title = crag.area
+        toLog = ToLog(this)
 
         binding.list.layoutManager = LinearLayoutManager(this)
         binding.list.adapter = adapter
 
-        showDirections()
-
-        binding.cragDirections.setOnClickListener {
-            Maps.directionsTo(this, crag.area, crag.latitude, crag.longitude, crag.parking)
+        // The keyboard wants the room more than the topo and photo buttons do.
+        ViewCompat.setOnApplyWindowInsetsListener(binding.bottomBar) { bar, insets ->
+            bar.visibility =
+                if (insets.isVisible(WindowInsetsCompat.Type.ime())) View.GONE else View.VISIBLE
+            insets
         }
 
-        // The other destination, for the day the default is not the one wanted.
+        // Typing wants the list, not the notes above it.
+        binding.search.setOnFocusChangeListener { _, focused ->
+            if (focused) binding.appBar.setExpanded(false, true)
+        }
+
+        cameForClimb = intent.hasExtra(EXTRA_CLIMB) || intent.hasExtra(EXTRA_FIND)
+
+        val id = intent.getStringExtra(EXTRA_ID)
+        val area = intent.getStringExtra(EXTRA_AREA)
+
+        // Parsed off the main thread: a big crag is megabytes of JSON, and
+        // opening this screen first after an update may also be what opens,
+        // and so upgrades, the library.
+        Thread {
+            val found = id?.let { CragStore.byId(this, it) }
+                ?: area?.let { CragStore.byArea(this, it) }
+            val stamp = found?.let { CragStore.stamp(this, it.id) } ?: 0L
+
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (found == null) {
+                    finish()
+                    return@runOnUiThread
+                }
+                readStamp = stamp
+                arrive(found)
+            }
+        }.start()
+    }
+
+    /** Everything that needs the crag, run once it has been read. */
+    private fun arrive(found: Crag) {
+        crag = found
+        loaded = true
+
+        supportActionBar?.title = crag.area
+
+        binding.cragDirections.setOnClickListener {
+            Maps.directionsTo(
+                this, crag.area, crag.latitude, crag.longitude, crag.parking,
+                choose = Settings.asksBetween(this, crag.hasPin, crag.parking.isNotEmpty()),
+            )
+        }
+
+        // Kept as the shortcut to choosing, for when a choice is set in Settings.
         binding.cragDirections.setOnLongClickListener {
             Maps.directionsTo(
                 this, crag.area, crag.latitude, crag.longitude, crag.parking, choose = true,
@@ -108,6 +168,7 @@ class CragActivity : AppCompatActivity() {
         binding.topos.setOnClickListener {
             startActivity(
                 Intent(this, TopoActivity::class.java)
+                    .putExtra(TopoActivity.EXTRA_ID, crag.id)
                     .putExtra(TopoActivity.EXTRA_AREA, crag.area)
                     .putExtra(TopoActivity.EXTRA_FILTER, query)
             )
@@ -116,23 +177,50 @@ class CragActivity : AppCompatActivity() {
         sort = runCatching { Sort.valueOf(sortPrefs().getString(crag.id, "").orEmpty()) }
             .getOrDefault(Sort.UKC)
 
-        showNotes()
-        showPhotos()
+        showCrag(initial = true)
 
         binding.search.doAfterTextChanged {
             query = it?.toString().orEmpty().trim().lowercase()
             refresh()
         }
 
-        setUpTypeFilter()
-
-        // Arrived from a search: show that climb rather than the whole crag.
+        // Arrived from a map pin with a name to narrow to.
         intent.getStringExtra(EXTRA_FIND)?.let {
             binding.search.setText(it)
             intent.removeExtra(EXTRA_FIND)
         }
 
-        refresh()
+        // Arrived for one climb: bring it into view and open it, rather than
+        // leaving it to be found in a list filtered down to its name.
+        val wanted = intent.getStringExtra(EXTRA_CLIMB)
+        intent.removeExtra(EXTRA_CLIMB)
+
+        refresh { wanted?.let { revealClimb(it) } }
+    }
+
+    /** The parts drawn from the crag itself, on arrival and after a refresh lands. */
+    private fun showCrag(initial: Boolean) {
+        setUpTypeFilter(initial)
+        showNotes()
+        showDirections()
+        showPhotos()
+        invalidateOptionsMenu()
+    }
+
+    private fun revealClimb(url: String) {
+        val climb = crag.buttresses.asSequence().flatMap { it.climbs }.firstOrNull { it.url == url }
+            ?: return
+
+        val position = adapter.currentList.indexOfFirst { it is Row.ClimbRow && it.climb.url == url }
+        if (position >= 0) {
+            binding.appBar.setExpanded(false, false)
+            binding.list.post {
+                (binding.list.layoutManager as LinearLayoutManager)
+                    .scrollToPositionWithOffset(position, binding.list.height / 3)
+            }
+        }
+
+        showActions(climb)
     }
 
     /**
@@ -140,7 +228,7 @@ class CragActivity : AppCompatActivity() {
      * per crag, since what you filter for at a boulder field differs from
      * what you want at a trad cliff.
      */
-    private fun setUpTypeFilter() {
+    private fun setUpTypeFilter(initial: Boolean) {
         val types = crag.buttresses
             .flatMap { it.climbs }
             .map { it.type }
@@ -154,10 +242,14 @@ class CragActivity : AppCompatActivity() {
             return
         }
 
+        binding.typeBox.visibility = View.VISIBLE
         val labels = listOf(getString(R.string.all_types)) + types
 
-        val remembered = typePrefs().getString(crag.id, "").orEmpty()
-        type = if (remembered in types) remembered else ""
+        type = when {
+            !initial -> type.takeIf { it in types }.orEmpty()
+            cameForClimb -> ""
+            else -> typePrefs().getString(crag.id, "").orEmpty().takeIf { it in types }.orEmpty()
+        }
 
         binding.type.setSimpleItems(labels.toTypedArray())
         binding.type.setText(if (type.isEmpty()) labels.first() else type, false)
@@ -204,10 +296,18 @@ class CragActivity : AppCompatActivity() {
     }
 
     override fun onPrepareOptionsMenu(menu: android.view.Menu): Boolean {
+        if (!loaded) {
+            for (index in 0 until menu.size()) menu.getItem(index).isVisible = false
+            return super.onPrepareOptionsMenu(menu)
+        }
+
         menu.findItem(R.id.map)?.isVisible = crag.hasPin || crag.locatedButtresses > 0
-        menu.findItem(R.id.save_photos)?.setTitle(
-            if (PhotoFetch.cragId == crag.id) R.string.photos_stop else R.string.save_photos
-        )
+        menu.findItem(R.id.sort)?.isVisible = true
+        menu.findItem(R.id.refresh_this)?.isVisible = true
+        menu.findItem(R.id.save_photos)?.apply {
+            isVisible = true
+            setTitle(if (PhotoFetch.cragId == crag.id) R.string.photos_stop else R.string.save_photos)
+        }
         menu.findItem(R.id.delete_photos)?.isVisible =
             PhotoFetch.cragId != crag.id && PhotoCache.count(this, crag.id) > 0
         return super.onPrepareOptionsMenu(menu)
@@ -220,10 +320,7 @@ class CragActivity : AppCompatActivity() {
         }
 
         if (item.itemId == R.id.map) {
-            startActivity(
-                Intent(this, MapActivity::class.java)
-                    .putExtra(MapActivity.EXTRA_AREA, crag.area)
-            )
+            startActivity(mapIntent(this, crag.id, crag.area))
             return true
         }
 
@@ -249,24 +346,37 @@ class CragActivity : AppCompatActivity() {
         return super.onOptionsItemSelected(item)
     }
 
-    /** Reloads the stored copy, so a refresh done elsewhere shows up here. */
+    /**
+     * Ticks and notes may have changed while away — a sync, a log — so the
+     * rows are redrawn. The crag itself is only read again when its file has
+     * changed, which is what a refresh done elsewhere looks like.
+     */
     override fun onResume() {
         super.onResume()
+        if (!loaded) return
 
-        CragStore.byArea(this, crag.area)?.let {
-            crag = it
-            setUpTypeFilter()
-            showNotes()
-            showDirections()
-            showPhotos()
-            invalidateOptionsMenu()
-            refresh()
-        }
+        refresh()
+
+        val id = crag.id
+        Thread {
+            val stamp = CragStore.stamp(this, id)
+            if (stamp == readStamp) return@Thread
+
+            val fresh = CragStore.byId(this, id) ?: return@Thread
+
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                readStamp = stamp
+                crag = fresh
+                showCrag(initial = false)
+                refresh()
+            }
+        }.start()
     }
 
     override fun onDestroy() {
         // The page reading photos lives in this screen's window.
-        if (PhotoFetch.cragId == crag.id) PhotoFetch.detach()
+        if (loaded && PhotoFetch.cragId == crag.id) PhotoFetch.detach()
         super.onDestroy()
     }
 
@@ -275,12 +385,17 @@ class CragActivity : AppCompatActivity() {
      * it was, so an older crag keeps pointing at its own pin until refreshed.
      */
     private fun showDirections() {
-        val toParking = Settings.directionsToParking(this) && crag.parking.isNotEmpty()
+        val hasParking = crag.parking.isNotEmpty()
+        val toParking = Settings.directionsToParking(this) && hasParking
 
         binding.cragDirections.visibility =
-            if (crag.hasPin || crag.parking.isNotEmpty()) View.VISIBLE else View.GONE
+            if (crag.hasPin || hasParking) View.VISIBLE else View.GONE
         binding.cragDirections.setText(
-            if (toParking) R.string.directions_to_parking else R.string.directions_to_crag
+            when {
+                Settings.asksBetween(this, crag.hasPin, hasParking) -> R.string.directions
+                toParking -> R.string.directions_to_parking
+                else -> R.string.directions_to_crag
+            }
         )
     }
 
@@ -294,7 +409,7 @@ class CragActivity : AppCompatActivity() {
             MaterialAlertDialogBuilder(this)
                 .setTitle(R.string.crag_notes)
                 .setMessage(notes)
-                .setPositiveButton(android.R.string.ok, null)
+                .setPositiveButton(R.string.close, null)
                 .show()
                 .findViewById<android.widget.TextView>(android.R.id.message)
                 ?.showLinks()
@@ -305,7 +420,7 @@ class CragActivity : AppCompatActivity() {
         val saved = PhotoCache.count(this, crag.id)
 
         binding.photos.visibility = if (saved > 0) View.VISIBLE else View.GONE
-        binding.photos.text = getString(R.string.photos_saved_n, saved)
+        binding.photos.text = resources.getQuantityString(R.plurals.photos_saved_n, saved, saved)
     }
 
     /**
@@ -323,8 +438,9 @@ class CragActivity : AppCompatActivity() {
         val message = when {
             climbs.isEmpty() -> getString(R.string.save_photos_crag_only)
             unread.isEmpty() -> getString(R.string.save_photos_again)
-            else -> getString(
-                R.string.save_photos_cost,
+            else -> resources.getQuantityString(
+                R.plurals.save_photos_cost,
+                unread.size,
                 unread.size,
                 photos,
                 ((unread.size * 0.7) / 60).toInt().coerceAtLeast(1),
@@ -387,7 +503,7 @@ class CragActivity : AppCompatActivity() {
                 android.widget.Toast.makeText(
                     this@CragActivity,
                     if (failed == null) resources.getQuantityString(R.plurals.photos_done, saved, saved)
-                    else getString(R.string.photos_failed, saved, failed),
+                    else resources.getQuantityString(R.plurals.photos_failed, saved, saved, failed),
                     android.widget.Toast.LENGTH_LONG,
                 ).show()
             }
@@ -398,11 +514,11 @@ class CragActivity : AppCompatActivity() {
 
     private fun confirmDeletePhotos() {
         val count = PhotoCache.count(this, crag.id)
-        val megabytes = PhotoCache.bytes(this, crag.id) / (1024 * 1024)
+        val megabytes = (PhotoCache.bytes(this, crag.id) / (1024 * 1024)).toInt()
 
         MaterialAlertDialogBuilder(this)
             .setTitle(R.string.delete_photos)
-            .setMessage(getString(R.string.delete_photos_warning, count, megabytes))
+            .setMessage(resources.getQuantityString(R.plurals.delete_photos_warning, count, count, megabytes))
             .setPositiveButton(R.string.delete_photos) { _, _ ->
                 PhotoCache.clear(this, crag.id)
                 showPhotos()
@@ -412,104 +528,8 @@ class CragActivity : AppCompatActivity() {
             .show()
     }
 
-    /** True when this climb has a line on one of the crag's cached topos. */
-    private fun onTopo(climb: Climb): Boolean {
-        if (climb.climbId <= 0L) return false
-
-        return crag.topos.any { topo -> topo.lines.any { it.climbId == climb.climbId } }
-    }
-
-    /** Tapping a climb shows what UKC says about it, then what can be done with it. */
     private fun showActions(climb: Climb) {
-        val view = DialogClimbBinding.inflate(layoutInflater)
-
-        view.detail.text = buildString {
-            append(climb.grade.ifBlank { "—" })
-            if (climb.type.isNotBlank()) append(" · ").append(climb.type)
-            if (climb.stars > 0) append(" · ").append("★".repeat(climb.stars))
-            if (climb.height > 0) append(" · ").append(getString(R.string.climb_height, climb.height))
-            if (climb.pitches > 1) {
-                append(" · ").append(getString(R.string.climb_pitches, climb.pitches))
-            }
-            if (ticks.has(climb.url)) append(" · ").append(getString(R.string.ticked))
-            else if (attempts.has(climb.url)) append(" · ").append(getString(R.string.attempted))
-            if (wishlist.has(climb.url)) append(" · ").append(getString(R.string.on_wishlist))
-        }
-
-        view.description.text = climb.description.ifBlank { getString(R.string.no_description) }
-        view.description.alpha = if (climb.description.isBlank()) 0.6f else 1f
-        view.description.showLinks()
-
-        val dialog = MaterialAlertDialogBuilder(this)
-            .setTitle(climb.name)
-            .setView(view.root)
-            .setNegativeButton(android.R.string.cancel, null)
-            .show()
-
-        view.topo.visibility = if (onTopo(climb)) View.VISIBLE else View.GONE
-        view.topo.setOnClickListener {
-            dialog.dismiss()
-            startActivity(
-                Intent(this, TopoActivity::class.java)
-                    .putExtra(TopoActivity.EXTRA_AREA, crag.area)
-                    .putExtra(TopoActivity.EXTRA_CLIMB_URL, climb.url)
-            )
-        }
-
-        // Saved photos open here, with no signal needed; otherwise on UKC.
-        val saved = if (climb.climbId > 0) PhotoCache.photos(this, crag.id, climb.climbId) else emptyList()
-
-        view.photos.visibility = if (climb.photos > 0 || saved.isNotEmpty()) View.VISIBLE else View.GONE
-        view.photos.text = if (saved.isNotEmpty()) getString(R.string.photos_saved_n, saved.size)
-        else getString(R.string.see_photos_n, climb.photos)
-        view.photos.setOnClickListener {
-            dialog.dismiss()
-
-            if (saved.isEmpty()) {
-                Maps.openUrl(this, climb.url + "#photos")
-                return@setOnClickListener
-            }
-
-            startActivity(
-                Intent(this, PhotosActivity::class.java)
-                    .putExtra(PhotosActivity.EXTRA_CRAG_ID, crag.id)
-                    .putExtra(PhotosActivity.EXTRA_CLIMB_ID, climb.climbId)
-                    .putExtra(PhotosActivity.EXTRA_TITLE, climb.name)
-            )
-        }
-
-        view.open.setOnClickListener {
-            dialog.dismiss()
-            Maps.openUrl(this, climb.url)
-        }
-
-        view.share.setOnClickListener {
-            dialog.dismiss()
-            startActivity(
-                Intent.createChooser(
-                    Intent(Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(Intent.EXTRA_SUBJECT, climb.name)
-                        putExtra(
-                            Intent.EXTRA_TEXT,
-                            "${climb.name} (${climb.grade}) — ${crag.area}\n${climb.url}",
-                        )
-                    },
-                    getString(R.string.share_via),
-                )
-            )
-        }
-
-        // Opens the climb's own UKC page, which carries its "Add to Logbook"
-        // button. The app never presses it without being asked.
-        view.log.setOnClickListener {
-            dialog.dismiss()
-            startActivity(
-                Intent(this, BrowseActivity::class.java)
-                    .putExtra(BrowseActivity.EXTRA_URL, climb.url)
-                    .putExtra(BrowseActivity.EXTRA_LOG_CLIMB, true)
-            )
-        }
+        ClimbDialog.show(this, crag, climb) { refresh() }
     }
 
     private fun matches(buttress: Buttress, climb: Climb): Boolean {
@@ -537,7 +557,20 @@ class CragActivity : AppCompatActivity() {
         }
     }
 
-    private fun refresh() {
+    private fun markOf(climb: Climb): Mark = when {
+        ticks.has(climb.url) -> Mark.TICKED
+        toLog.has(climb.url) -> Mark.TO_LOG
+        attempts.has(climb.url) -> Mark.ATTEMPTED
+        else -> Mark.NONE
+    }
+
+    private fun climbRow(climb: Climb, buttress: String = "") =
+        Row.ClimbRow(climb, buttress, markOf(climb), wishlist.has(climb.url))
+
+    /** [then] runs once the list on screen matches, for anything that needs a row's position. */
+    private fun refresh(then: () -> Unit = {}) {
+        if (!loaded) return
+
         val rows = mutableListOf<Row>()
 
         if (sort == Sort.UKC) {
@@ -547,7 +580,7 @@ class CragActivity : AppCompatActivity() {
                 if (visible.isEmpty()) continue
 
                 rows.add(Row.ButtressRow(buttress, visible.size))
-                visible.forEach { rows.add(Row.ClimbRow(it)) }
+                visible.forEach { rows.add(climbRow(it)) }
             }
         } else {
             val all = crag.buttresses.flatMap { buttress ->
@@ -567,38 +600,34 @@ class CragActivity : AppCompatActivity() {
                 else -> all.sortedBy { it.second.name.lowercase() }
             }
 
-            sorted.forEach { rows.add(Row.ClimbRow(it.second, it.first)) }
+            sorted.forEach { rows.add(climbRow(it.second, it.first)) }
         }
 
-        adapter.submit(rows)
+        adapter.submitList(rows) { then() }
 
-        binding.progress.text = getString(
-            R.string.crag_progress_long,
+        binding.progress.text = resources.getQuantityString(
+            R.plurals.crag_progress_long,
+            crag.climbCount,
             ticks.countIn(crag),
             crag.climbCount,
-            crag.buttresses.size,
+            resources.getQuantityString(R.plurals.buttresses, crag.buttresses.size, crag.buttresses.size),
         )
 
         binding.empty.visibility = if (rows.isEmpty()) View.VISIBLE else View.GONE
 
         val topos = visibleTopos()
         binding.topos.visibility = if (topos.isEmpty()) View.GONE else View.VISIBLE
-        binding.topos.text = getString(R.string.topo_count, topos.size)
+        binding.topos.text = resources.getQuantityString(R.plurals.topos_n, topos.size, topos.size)
     }
 
-    private inner class RowAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
-
-        private var rows: List<Row> = emptyList()
-
-        fun submit(next: List<Row>) {
-            rows = next
-            notifyDataSetChanged()
-        }
-
-        override fun getItemCount(): Int = rows.size
+    /**
+     * Diffed rather than replaced, so a tick landing or a letter typed keeps
+     * the reader where they were in a crag of several hundred climbs.
+     */
+    private inner class RowAdapter : ListAdapter<Row, RecyclerView.ViewHolder>(RowDiff) {
 
         override fun getItemViewType(position: Int): Int =
-            if (rows[position] is Row.ButtressRow) TYPE_BUTTRESS else TYPE_CLIMB
+            if (getItem(position) is Row.ButtressRow) TYPE_BUTTRESS else TYPE_CLIMB
 
         override fun onCreateViewHolder(
             parent: ViewGroup,
@@ -614,11 +643,21 @@ class CragActivity : AppCompatActivity() {
         }
 
         override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
-            when (val row = rows[position]) {
+            when (val row = getItem(position)) {
                 is Row.ButtressRow -> (holder as ButtressHolder).bind(row)
-                is Row.ClimbRow -> (holder as ClimbHolder).bind(row.climb, row.buttress)
+                is Row.ClimbRow -> (holder as ClimbHolder).bind(row)
             }
         }
+    }
+
+    private object RowDiff : DiffUtil.ItemCallback<Row>() {
+        override fun areItemsTheSame(old: Row, new: Row): Boolean = when {
+            old is Row.ButtressRow && new is Row.ButtressRow -> old.buttress.name == new.buttress.name
+            old is Row.ClimbRow && new is Row.ClimbRow -> old.climb.url == new.climb.url
+            else -> false
+        }
+
+        override fun areContentsTheSame(old: Row, new: Row): Boolean = old == new
     }
 
     private inner class ButtressHolder(private val item: ItemSectorBinding) :
@@ -651,37 +690,84 @@ class CragActivity : AppCompatActivity() {
     private inner class ClimbHolder(private val item: ItemRouteBinding) :
         RecyclerView.ViewHolder(item.root) {
 
-        fun bind(climb: Climb, buttress: String) {
+        fun bind(row: Row.ClimbRow) {
+            val climb = row.climb
             val type = climb.type.ifEmpty { "—" }
 
             item.name.text = climb.name
             item.grade.text = climb.grade
             item.stars.text = "★".repeat(climb.stars)
+            item.stars.contentDescription = if (climb.stars > 0) {
+                resources.getQuantityString(R.plurals.stars, climb.stars, climb.stars)
+            } else {
+                null
+            }
             val logs = resources.getQuantityString(R.plurals.logs, climb.logs, climb.logs)
             item.meta.text = getString(R.string.route_meta, type, logs) +
-                if (buttress.isBlank()) "" else " · " + buttress
+                if (row.buttress.isBlank()) "" else " · " + row.buttress
 
-            // Ticks come from the logbook, so the row only reports them.
-            val done = ticks.has(climb.url)
-            item.tick.visibility = if (done) View.VISIBLE else View.INVISIBLE
+            // Ticks come from the logbook, so the row only reports them. The
+            // same slot says sent-to-log or tried when there is no tick.
+            when (row.mark) {
+                Mark.TICKED -> mark(R.drawable.ic_ticked, R.string.ticked)
+                Mark.TO_LOG -> mark(R.drawable.ic_to_log, R.string.sent_to_log)
+                Mark.ATTEMPTED -> mark(R.drawable.ic_attempt, R.string.attempted)
+                Mark.NONE -> {
+                    item.tick.visibility = View.INVISIBLE
+                    item.tick.contentDescription = null
+                }
+            }
+
+            item.wish.visibility = if (row.wished) View.VISIBLE else View.GONE
             item.photos.visibility = if (climb.photos > 0) View.VISIBLE else View.GONE
+
+            val done = row.mark == Mark.TICKED
             item.name.alpha = if (done) 0.45f else 1f
             item.meta.alpha = if (done) 0.45f else 1f
 
             item.root.setOnClickListener { showActions(climb) }
         }
+
+        private fun mark(icon: Int, description: Int) {
+            item.tick.setImageResource(icon)
+            item.tick.contentDescription = getString(description)
+            item.tick.visibility = View.VISIBLE
+        }
     }
 
     companion object {
+        /** The crag's id. Preferred: names are not unique. */
+        const val EXTRA_ID = "crag_id"
+
+        /** The crag's name, for callers that have nothing else. */
         const val EXTRA_AREA = "area"
 
-        /** A climb name to filter to on arrival. */
+        /** A name to filter the list to on arrival. */
         const val EXTRA_FIND = "find"
+
+        /** A climb URL to scroll to and open on arrival. */
+        const val EXTRA_CLIMB = "climb_url"
 
         /** Roughly what UKC shows in a crag's own gallery, for the size estimate. */
         private const val CRAG_GALLERY = 24
 
         private const val TYPE_BUTTRESS = 0
         private const val TYPE_CLIMB = 1
+
+        /** Opens this crag, by id with the name as a fallback, at one climb if given. */
+        fun intent(context: Context, cragId: String, area: String, climbUrl: String? = null): Intent =
+            Intent(context, CragActivity::class.java)
+                .putExtra(EXTRA_ID, cragId)
+                .putExtra(EXTRA_AREA, area)
+                .apply { if (climbUrl != null) putExtra(EXTRA_CLIMB, climbUrl) }
+
+        /**
+         * The map, for one crag. The map reads the name today; the id rides
+         * along so it can move to it, names not being unique.
+         */
+        fun mapIntent(context: Context, cragId: String, area: String): Intent =
+            Intent(context, MapActivity::class.java)
+                .putExtra(MapActivity.EXTRA_AREA, area)
+                .putExtra(EXTRA_ID, cragId)
     }
 }
