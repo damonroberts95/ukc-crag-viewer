@@ -21,7 +21,7 @@
             android:layout_height="wrap_content"
             android:layout_marginEnd="8dp"
             app:boxBackgroundColor="?attr/colorSurface"
-            app:startIconDrawable="@android:drawable/ic_menu_search"
+            app:startIconDrawable="@drawable/ic_search"
             android:hint="@string/map_search_hint">
 
             <com.google.android.material.textfield.MaterialAutoCompleteTextView
@@ -59,17 +59,20 @@
             android:visibility="gone"
             android:text="@string/face_north" />
 
-        <!-- Imagery and map data both have to be credited where they are shown. -->
+        <!-- Imagery and map data both have to be credited where they are shown,
+             and the credit leads to the licence it stands for. -->
         <TextView
             android:id="@+id/credit"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom|start"
             android:layout_margin="6dp"
+            android:clickable="true"
+            android:focusable="true"
             android:paddingHorizontal="6dp"
             android:paddingVertical="2dp"
             android:background="@color/scrim"
-            android:textColor="#F2F2EF"
+            android:textColor="@color/map_credit_text"
             android:textSize="10sp" />
 
         <com.google.android.material.floatingactionbutton.FloatingActionButton
@@ -79,7 +82,7 @@
             android:layout_gravity="bottom|end"
             android:layout_margin="16dp"
             android:contentDescription="@string/centre_on_me"
-            android:src="@android:drawable/ic_menu_mylocation" />
+            android:src="@drawable/ic_my_location" />
 
         <TextView
             android:id="@+id/note"
@@ -90,7 +93,7 @@
             android:background="@color/scrim"
             android:paddingHorizontal="10dp"
             android:paddingVertical="6dp"
-            android:textColor="#FFFFFF"
+            android:textColor="@color/map_note_text"
             android:textSize="12sp"
             android:visibility="gone" />
 

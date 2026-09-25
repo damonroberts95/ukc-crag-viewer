@@ -16,8 +16,6 @@ import androidx.core.content.ContextCompat
  */
 object Nearby {
 
-    const val PERMISSION = Manifest.permission.ACCESS_COARSE_LOCATION
-
     /** Both are requested together; the OS shows one dialog with a precision choice. */
     val PERMISSIONS = arrayOf(
         Manifest.permission.ACCESS_COARSE_LOCATION,
@@ -72,7 +70,19 @@ object Nearby {
             onFix(fix ?: lastKnown(context))
         }
 
-        listener = LocationListener { fix -> settle(fix) }
+        // Every method spelled out: before API 30 only onLocationChanged had
+        // a default body, and a lambda leaves the rest abstract — the first
+        // provider to change status would throw AbstractMethodError.
+        listener = object : LocationListener {
+            override fun onLocationChanged(fix: Location) = settle(fix)
+
+            @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
+            override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+
+            override fun onProviderEnabled(provider: String) {}
+
+            override fun onProviderDisabled(provider: String) {}
+        }
 
         for (provider in providers) {
             runCatching {
@@ -81,6 +91,19 @@ object Nearby {
         }
 
         handler.postDelayed({ settle(null) }, timeoutMs)
+    }
+
+    /**
+     * The last known fix, but only if it is fresh. A map dot or a walking line
+     * drawn from where the phone was an hour ago, a valley away, is worse than
+     * waiting for a real fix; a distance sort does not care and uses
+     * [lastKnown].
+     */
+    fun recent(context: Context, maxAgeMs: Long = 2 * 60_000L): Location? {
+        val fix = lastKnown(context) ?: return null
+        val ageNanos = android.os.SystemClock.elapsedRealtimeNanos() - fix.elapsedRealtimeNanos
+
+        return fix.takeIf { ageNanos in 0..maxAgeMs * 1_000_000L }
     }
 
     /** Best recent fix across providers, or null if none is available yet. */

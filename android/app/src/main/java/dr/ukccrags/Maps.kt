@@ -35,7 +35,8 @@ object Maps {
     /**
      * Directions for a crag: to its parking when UKC gives one and the reader
      * has not turned that off, to the crag's own pin otherwise. A crag with
-     * several car parks asks which, since they usually serve different ends.
+     * several car parks asks which, since they usually serve different ends,
+     * and so does one with parking turned off as the default.
      * [choose] always asks, for when the default is not what is wanted today.
      */
     fun directionsTo(
@@ -68,9 +69,14 @@ object Maps {
 
         val wantParking = Settings.directionsToParking(context) && parking.isNotEmpty()
 
+        // With parking turned off as the default there is no default left to
+        // pick between a car park and the pin, so a plain tap asks rather
+        // than hiding the car park behind a long-press nobody knows about.
+        val undecided = !wantParking && parking.isNotEmpty()
+
         when {
             options.size == 1 -> options.first().second()
-            choose || (wantParking && parking.size > 1) ->
+            choose || undecided || (wantParking && parking.size > 1) ->
                 com.google.android.material.dialog.MaterialAlertDialogBuilder(context)
                     .setTitle(R.string.directions_to)
                     .setItems(options.map { it.first }.toTypedArray()) { _, which ->

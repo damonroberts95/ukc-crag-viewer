@@ -169,9 +169,6 @@ object Walk {
         return waysIn(context, cragId, lat - padLat, lon - padLon, lat + padLat, lon + padLon)
     }
 
-    /** True when this crag's paths are already on disk, so a walk needs no signal. */
-    fun prepared(context: Context, cragId: String): Boolean = cacheFile(context, cragId).exists()
-
     /**
      * The cached ways for a crag, fetching them if the corridor is not covered.
      * Null means there was nothing usable and no way to get it.
@@ -199,88 +196,146 @@ object Walk {
     ): List<List<Pair<Double, Double>>>? {
         val stored = read(cacheFile(context, cragId))
 
-        // A cache only counts if it covers the whole corridor; a walk from a
-        // different direction needs its own fetch.
-        if (stored != null && stored.covers(south, west, north, east)) return stored.ways
+        // A cache only counts if one fetch covered the whole corridor; a walk
+        // from a different direction needs its own.
+        if (stored != null && stored.covers(south, west, north, east)) return stored.lines()
 
-        val fetched = fetch(south, west, north, east) ?: return stored?.ways
+        val fetched = fetch(context, south, west, north, east) ?: return stored?.lines()
 
-        // Widen to whatever was already held, so approaching from another side
-        // does not throw away a perfectly good cache.
-        val merged = if (stored == null) {
-            Cached(south, west, north, east, fetched)
-        } else {
-            Cached(
-                minOf(south, stored.south), minOf(west, stored.west),
-                maxOf(north, stored.north), maxOf(east, stored.east),
-                fetched,
-            )
-        }
+        // Kept beside whatever was already held, so approaching from another
+        // side does not throw away a perfectly good cache. Both halves are
+        // kept: the boxes, because the rectangle around two corridors is not
+        // somewhere either of them fetched, and the ways, because widening the
+        // bounds over only the new ways left the old corridor looking covered
+        // and empty — a straight line where there had been a path.
+        val box = doubleArrayOf(south, west, north, east)
+        val merged = stored?.plus(box, fetched) ?: Cached(listOf(box), fetched)
 
         write(cacheFile(context, cragId), merged)
-        return merged.ways
+        return merged.lines()
     }
 
+    /** One way from Overpass. An id of -1 was read from a cache that kept none. */
+    private class Way(val id: Long, val points: List<Pair<Double, Double>>)
+
+    /**
+     * A crag's paths on disk. Each box is `[south, west, north, east]` of one
+     * fetch; a corridor is covered only when a single box holds all of it.
+     */
     private class Cached(
-        val south: Double,
-        val west: Double,
-        val north: Double,
-        val east: Double,
-        val ways: List<List<Pair<Double, Double>>>,
+        val boxes: List<DoubleArray>,
+        val ways: List<Way>,
     ) {
-        fun covers(s: Double, w: Double, n: Double, e: Double): Boolean =
-            s >= south && w >= west && n <= north && e <= east
+        fun covers(s: Double, w: Double, n: Double, e: Double): Boolean = boxes.any {
+            s >= it[0] && w >= it[1] && n <= it[2] && e <= it[3]
+        }
+
+        fun lines(): List<List<Pair<Double, Double>>> = ways.map { it.points }
+
+        /**
+         * Adds one fetch. Overpass hands each way back whole, not clipped to
+         * the box, so the same way arrives from every corridor that touches
+         * it: ids say which. Ways from a cache too old to carry ids are matched
+         * on their geometry instead, which is just as whole.
+         */
+        fun plus(box: DoubleArray, fetched: List<Way>): Cached {
+            val ids = fetched.mapTo(HashSet()) { it.id }
+            val shapes = fetched.mapTo(HashSet()) { it.points }
+
+            val kept = ways.filter { old ->
+                if (old.id >= 0) old.id !in ids else old.points !in shapes
+            }
+
+            // A box inside the new one says nothing the new one does not.
+            val others = boxes.filterNot {
+                it[0] >= box[0] && it[1] >= box[1] && it[2] <= box[2] && it[3] <= box[3]
+            }
+
+            return Cached(others + listOf(box), kept + fetched)
+        }
     }
 
+    /**
+     * Reads either shape of cache file: the current one, with a list of boxes
+     * and an id per way, or the first, with one set of bounds and bare ways.
+     * Anything unreadable counts as no cache and is replaced by the next fetch.
+     */
     private fun read(file: File): Cached? = runCatching {
         if (!file.exists()) return null
 
         val root = JSONObject(file.readText())
         val wayArray = root.getJSONArray("ways")
+        val ids = root.optJSONArray("ids")?.takeIf { it.length() == wayArray.length() }
 
         val ways = (0 until wayArray.length()).map { index ->
             val line = wayArray.getJSONArray(index)
-            (0 until line.length()).map {
+            val points = (0 until line.length()).map {
                 val point = line.getJSONArray(it)
                 point.getDouble(0) to point.getDouble(1)
             }
+            Way(ids?.getLong(index) ?: -1L, points)
         }
 
-        Cached(
-            root.getDouble("south"), root.getDouble("west"),
-            root.getDouble("north"), root.getDouble("east"),
-            ways,
-        )
+        val boxArray = root.optJSONArray("boxes")
+        val boxes = if (boxArray != null) {
+            (0 until boxArray.length()).map { index ->
+                val box = boxArray.getJSONArray(index)
+                DoubleArray(4) { box.getDouble(it) }
+            }
+        } else {
+            listOf(
+                doubleArrayOf(
+                    root.getDouble("south"), root.getDouble("west"),
+                    root.getDouble("north"), root.getDouble("east"),
+                )
+            )
+        }
+
+        Cached(boxes, ways)
     }.getOrNull()
 
     private fun write(file: File, cached: Cached) {
         runCatching {
             val ways = JSONArray()
+            val ids = JSONArray()
 
             for (way in cached.ways) {
                 val line = JSONArray()
-                for ((lat, lon) in way) {
+                for ((lat, lon) in way.points) {
                     line.put(JSONArray().put(lat).put(lon))
                 }
                 ways.put(line)
+                ids.put(way.id)
+            }
+
+            val boxes = JSONArray()
+            for (box in cached.boxes) {
+                boxes.put(JSONArray().put(box[0]).put(box[1]).put(box[2]).put(box[3]))
             }
 
             file.writeText(
                 JSONObject()
-                    .put("south", cached.south)
-                    .put("west", cached.west)
-                    .put("north", cached.north)
-                    .put("east", cached.east)
+                    .put("boxes", boxes)
                     .put("ways", ways)
+                    .put("ids", ids)
                     .toString()
             )
         }
     }
 
+    /**
+     * What this app tells Overpass it is. Overpass asks for something
+     * identifiable and blocks what it cannot name. Kept in one place so it can
+     * follow the app's own user agent.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun userAgent(context: Context): String = "UKC Crag Viewer (dr.ukccrags)"
+
     /** One Overpass call. `out geom` hands back the shape, so nodes need no second pass. */
     private fun fetch(
+        context: Context,
         south: Double, west: Double, north: Double, east: Double,
-    ): List<List<Pair<Double, Double>>>? = runCatching {
+    ): List<Way>? = runCatching {
         val box = "$south,$west,$north,$east"
         val query = """
             [out:json][timeout:25];
@@ -295,8 +350,7 @@ object Walk {
             readTimeout = 40000
             doOutput = true
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-            // Overpass asks for something identifiable, and blocks what it cannot name.
-            setRequestProperty("User-Agent", "UKC Crag Viewer (dr.ukccrags)")
+            setRequestProperty("User-Agent", userAgent(context))
         }
 
         connection.outputStream.use {
@@ -314,15 +368,15 @@ object Walk {
         val elements = JSONObject(text).optJSONArray("elements") ?: return@runCatching emptyList()
 
         (0 until elements.length()).mapNotNull { index ->
-            val geometry = elements.getJSONObject(index).optJSONArray("geometry")
-                ?: return@mapNotNull null
+            val element = elements.getJSONObject(index)
+            val geometry = element.optJSONArray("geometry") ?: return@mapNotNull null
 
             val line = (0 until geometry.length()).map {
                 val node = geometry.getJSONObject(it)
                 node.getDouble("lat") to node.getDouble("lon")
             }
 
-            line.takeIf { it.size >= 2 }
+            if (line.size < 2) null else Way(element.optLong("id", -1L), line)
         }
     }.getOrElse {
         Log.w("UKC", "overpass fetch failed: $it")

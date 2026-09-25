@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Parking's key in the legend: the same road-sign square as on the map. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="16dp"
+    android:height="16dp"
+    android:viewportWidth="16"
+    android:viewportHeight="16">
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4,1H12A3,3 0,0 1,15,4V12A3,3 0,0 1,12,15H4A3,3 0,0 1,1,12V4A3,3 0,0 1,4,1z" />
+
+</vector>
