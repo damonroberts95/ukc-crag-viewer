@@ -46,8 +46,16 @@ class SearchActivity : AppCompatActivity() {
     /** Bumped per load, so a slow one cannot overwrite a newer one. */
     private var loading = 0
 
+    /**
+     * The bouldering grade system rows are drawn in, read on each resume: a
+     * change in Settings redraws rows whose data did not change, which a diff
+     * alone would never do.
+     */
+    private var gradeSystem = BoulderGrades.FONT
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        gradeSystem = BoulderGrades.system(this)
 
         binding = ActivitySearchBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -140,6 +148,12 @@ class SearchActivity : AppCompatActivity() {
      */
     override fun onResume() {
         super.onResume()
+        BoulderGrades.system(this).let {
+            if (it != gradeSystem) {
+                gradeSystem = it
+                adapter.notifyDataSetChanged()
+            }
+        }
         load()
     }
 
@@ -187,7 +201,7 @@ class SearchActivity : AppCompatActivity() {
             pool
         } else {
             pool.filter { hit ->
-                "${hit.name} ${hit.grade} ${hit.cragArea}".lowercase().contains(wanted)
+                "${hit.name} ${hit.grade} ${BoulderGrades.show(hit.grade, hit.type, gradeSystem)} ${hit.cragArea}".lowercase().contains(wanted)
             }
         }
 
@@ -246,7 +260,7 @@ class SearchActivity : AppCompatActivity() {
             val (hit, done, sent) = getItem(position)
 
             holder.item.name.text = hit.name
-            holder.item.grade.text = hit.grade
+            holder.item.grade.text = BoulderGrades.show(hit.grade, hit.type, gradeSystem)
             holder.item.meta.text = buildString {
                 append(hit.cragArea)
                 if (hit.type.isNotBlank()) append(" · ").append(hit.type)

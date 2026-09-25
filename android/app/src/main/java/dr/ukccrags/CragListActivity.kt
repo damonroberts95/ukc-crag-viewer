@@ -119,8 +119,16 @@ class CragListActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * The bouldering grade system rows are drawn in, read on each resume: a
+     * change in Settings redraws rows whose data did not change, which a diff
+     * alone would never do.
+     */
+    private var gradeSystem = BoulderGrades.FONT
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        gradeSystem = BoulderGrades.system(this)
 
         binding = ActivityCragListBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -656,6 +664,16 @@ class CragListActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
 
+        BoulderGrades.system(this).let {
+            if (it != gradeSystem) {
+                gradeSystem = it
+                // Grade groups are named in the system too.
+                grades.clear()
+                setUpGrades()
+                adapter.notifyDataSetChanged()
+            }
+        }
+
         here = Nearby.lastKnown(this) ?: here
 
         // Back from adding crags on the guide's say-so: now location can be asked.
@@ -702,11 +720,27 @@ class CragListActivity : AppCompatActivity() {
     private fun setUpGrades() {
         // Ordered by UKC's own score, so f5 sits below f6A rather than beside
         // it; each group sits where its easiest member does.
+        // Boulder problems group under their grade in the chosen system, so
+        // "V4" gathers f6B, f6B+ and the V4s alike. Crags read before UKC's
+        // score was kept have none, so problems fall back to the Font ladder.
         val groups = LinkedHashMap<String, MutableSet<String>>()
         kinds
             .filter { (kind, _, _) -> type.isEmpty() || kind.equals(type, ignoreCase = true) }
-            .sortedBy { (_, _, score) -> score }
-            .forEach { (_, grade, _) -> groups.getOrPut(gradeGroup(grade)) { linkedSetOf() }.add(grade) }
+            .sortedWith(compareBy(
+                { (kind, _, score) -> if (score > 0) 0 else if (BoulderGrades.isBoulder(kind)) 1 else 2 },
+                { (kind, grade, score) ->
+                    if (score > 0) score
+                    else BoulderGrades.rung(grade)?.toDouble()?.takeIf { BoulderGrades.isBoulder(kind) } ?: 0.0
+                },
+            ))
+            .forEach { (kind, grade, _) ->
+                val label = if (BoulderGrades.isBoulder(kind)) {
+                    BoulderGrades.show(grade, kind, gradeSystem)
+                } else {
+                    gradeGroup(grade)
+                }
+                groups.getOrPut(label) { linkedSetOf() }.add(grade)
+            }
 
         gradeGroups = groups
         val offered = groups.keys.toList()
@@ -985,7 +1019,7 @@ class CragListActivity : AppCompatActivity() {
         val hit = row.hit
 
         item.name.text = hit.name
-        item.grade.text = hit.grade
+        item.grade.text = BoulderGrades.show(hit.grade, hit.type, gradeSystem)
         item.meta.text = buildString {
             append(hit.cragArea)
             if (hit.type.isNotBlank()) append(" · ").append(hit.type)

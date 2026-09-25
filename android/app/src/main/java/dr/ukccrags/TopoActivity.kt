@@ -79,7 +79,7 @@ class TopoActivity : AppCompatActivity() {
         binding.topo.grades = found.buttresses
             .flatMap { it.climbs }
             .filter { it.climbId > 0L && it.grade.isNotBlank() }
-            .associate { it.climbId to it.grade }
+            .associate { it.climbId to BoulderGrades.show(this, it.grade, it.type) }
 
         binding.topo.onTap = { line ->
             focusedLine = line

@@ -53,6 +53,9 @@ class SettingsActivity : AppCompatActivity() {
         binding.units.title.setText(R.string.settings_units)
         binding.units.root.setOnClickListener { chooseUnits() }
 
+        binding.boulderGrades.title.setText(R.string.settings_boulder_grades)
+        binding.boulderGrades.root.setOnClickListener { chooseBoulderGrades() }
+
         binding.clearMap.title.setText(R.string.settings_clear_map)
         binding.clearMap.root.setOnClickListener { confirmClearMap() }
 
@@ -83,6 +86,7 @@ class SettingsActivity : AppCompatActivity() {
 
         showStorage()
         showUnits()
+        showBoulderGrades()
         showDirections()
     }
 
@@ -162,6 +166,35 @@ class SettingsActivity : AppCompatActivity() {
                 )
             }
         }.start()
+    }
+
+    private val boulderSystems = listOf(
+        BoulderGrades.FONT to R.string.boulder_grades_font,
+        BoulderGrades.V to R.string.boulder_grades_v,
+        BoulderGrades.UK to R.string.boulder_grades_uk,
+    )
+
+    private fun showBoulderGrades() {
+        val chosen = Settings.boulderGrades(this)
+        binding.boulderGrades.summary.setText(
+            boulderSystems.firstOrNull { it.first == chosen }?.second ?: R.string.boulder_grades_font
+        )
+    }
+
+    private fun chooseBoulderGrades() {
+        val chosen = boulderSystems.indexOfFirst { it.first == Settings.boulderGrades(this) }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.settings_boulder_grades)
+            .setSingleChoiceItems(
+                boulderSystems.map { getString(it.second) }.toTypedArray(), chosen,
+            ) { dialog, which ->
+                Settings.setBoulderGrades(this, boulderSystems[which].first)
+                showBoulderGrades()
+                dialog.dismiss()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     private fun showUnits() {

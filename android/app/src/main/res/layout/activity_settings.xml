@@ -37,6 +37,10 @@
                 android:id="@+id/units"
                 layout="@layout/item_setting" />
 
+            <include
+                android:id="@+id/boulderGrades"
+                layout="@layout/item_setting" />
+
             <TextView
                 style="@style/Widget.UkcCrags.SettingsHeader"
                 android:text="@string/settings_storage" />

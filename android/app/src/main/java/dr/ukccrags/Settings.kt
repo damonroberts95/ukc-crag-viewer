@@ -55,6 +55,13 @@ object Settings {
     fun setWeeklySync(context: Context, on: Boolean) =
         prefs(context).edit().putBoolean("weekly_sync", on).apply()
 
+    /** Which system boulder problems are shown in. Font unless chosen. */
+    fun boulderGrades(context: Context): String =
+        prefs(context).getString("boulder_grades", BoulderGrades.FONT) ?: BoulderGrades.FONT
+
+    fun setBoulderGrades(context: Context, system: String) =
+        prefs(context).edit().putString("boulder_grades", system).apply()
+
     const val UNITS_AUTO = "auto"
     const val UNITS_MILES = "miles"
     const val UNITS_KM = "km"

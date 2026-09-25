@@ -374,6 +374,11 @@ Keep this screen open while it runs. Stopping loses nothing: the next run carrie
     <string name="settings_weekly_sync">Weekly logbook sync</string>
     <string name="settings_weekly_sync_summary">Once a week, on opening the app, read your UKC logbook for new ticks. Needs you signed in.</string>
     <string name="settings_units">Distances</string>
+    <string name="settings_boulder_grades">Bouldering grades</string>
+    <string name="boulder_grades_font">Font (f6B)</string>
+    <string name="boulder_grades_v">V grades (V4)</string>
+    <string name="boulder_grades_uk">UK tech grades (6a)</string>
+    <string name="boulder_grade_original">%1$s on UKC</string>
     <string name="units_auto">Match the phone’s region</string>
     <string name="units_miles">Miles</string>
     <string name="units_km">Kilometres</string>

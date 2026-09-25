@@ -72,8 +72,16 @@ class CragActivity : AppCompatActivity() {
      */
     private var cameForClimb = false
 
+    /**
+     * The bouldering grade system rows are drawn in, read on each resume: a
+     * change in Settings redraws rows whose data did not change, which a diff
+     * alone would never do.
+     */
+    private var gradeSystem = BoulderGrades.FONT
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        gradeSystem = BoulderGrades.system(this)
 
         binding = ActivityCragBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -355,6 +363,13 @@ class CragActivity : AppCompatActivity() {
         super.onResume()
         if (!loaded) return
 
+        BoulderGrades.system(this).let {
+            if (it != gradeSystem) {
+                gradeSystem = it
+                adapter.notifyDataSetChanged()
+            }
+        }
+
         refresh()
 
         val id = crag.id
@@ -538,7 +553,7 @@ class CragActivity : AppCompatActivity() {
         if (query.isEmpty()) return true
 
         val haystack =
-            "${climb.name} ${climb.grade} ${climb.type} ${buttress.name}".lowercase()
+            "${climb.name} ${climb.grade} ${BoulderGrades.show(climb.grade, climb.type, gradeSystem)} ${climb.type} ${buttress.name}".lowercase()
 
         return haystack.contains(query)
     }
@@ -700,7 +715,7 @@ class CragActivity : AppCompatActivity() {
             val type = climb.type.ifEmpty { "—" }
 
             item.name.text = climb.name
-            item.grade.text = climb.grade
+            item.grade.text = BoulderGrades.show(climb.grade, climb.type, gradeSystem)
             item.stars.text = "★".repeat(climb.stars)
             item.stars.contentDescription = if (climb.stars > 0) {
                 resources.getQuantityString(R.plurals.stars, climb.stars, climb.stars)

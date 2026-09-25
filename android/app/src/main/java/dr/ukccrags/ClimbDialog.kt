@@ -35,7 +35,12 @@ object ClimbDialog {
         val res = activity.resources
 
         view.detail.text = buildString {
-            append(climb.grade.ifBlank { "—" })
+            val system = BoulderGrades.system(activity)
+            append(BoulderGrades.show(climb.grade, climb.type, system).ifBlank { "—" })
+            // A converted grade is an equivalence, so UKC's own stays in view.
+            if (BoulderGrades.converted(climb.grade, climb.type, system)) {
+                append(" (").append(activity.getString(R.string.boulder_grade_original, climb.grade)).append(")")
+            }
             if (climb.type.isNotBlank()) append(" · ").append(climb.type)
             if (climb.stars > 0) append(" · ").append("★".repeat(climb.stars))
             if (climb.height > 0) append(" · ").append(activity.getString(R.string.climb_height, climb.height))
