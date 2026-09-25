@@ -22,7 +22,8 @@
             android:layout_marginEnd="8dp"
             app:boxBackgroundColor="?attr/colorSurface"
             app:startIconDrawable="@drawable/ic_search"
-            android:hint="@string/map_search_hint">
+            android:hint="@string/map_search_hint"
+            app:endIconMode="clear_text">
 
             <com.google.android.material.textfield.MaterialAutoCompleteTextView
                 android:id="@+id/search"
