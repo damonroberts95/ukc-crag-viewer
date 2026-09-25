@@ -1016,9 +1016,13 @@ class MapActivity : AppCompatActivity() {
         parking: List<Parking>,
     ) {
         view.directions.isEnabled = true
+        // Same wording as the crag screen's button, from the same setting.
         view.directions.setText(
-            if (Settings.directionsToParking(this) && parking.isNotEmpty()) R.string.directions_to_parking
-            else R.string.directions
+            when {
+                Settings.asksBetween(this, true, parking.isNotEmpty()) -> R.string.directions
+                Settings.directionsToParking(this) && parking.isNotEmpty() -> R.string.directions_to_parking
+                else -> R.string.directions
+            }
         )
         view.directions.setOnClickListener {
             sheet.dismiss()
@@ -1044,7 +1048,7 @@ class MapActivity : AppCompatActivity() {
                 R.plurals.climbs, crag.climbCount, crag.climbCount,
             ))
             if (ticked != null) append(" · ").append(
-                getString(R.string.crag_progress, ticked, crag.climbCount)
+                resources.getQuantityString(R.plurals.crag_ticked, crag.climbCount, ticked, crag.climbCount)
             )
             if (away != null) append(" · ").append(Units.distance(this@MapActivity, away))
         }
@@ -1078,7 +1082,7 @@ class MapActivity : AppCompatActivity() {
         }
 
         view.topos.visibility = if (crag.topoCount == 0) View.GONE else View.VISIBLE
-        view.topos.text = getString(R.string.topo_count, crag.topoCount)
+        view.topos.text = resources.getQuantityString(R.plurals.topos_n, crag.topoCount, crag.topoCount)
         view.topos.setOnClickListener {
             sheet.dismiss()
             startActivity(

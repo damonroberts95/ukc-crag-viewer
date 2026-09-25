@@ -151,7 +151,10 @@ object CragStore {
      * brings in any crag file the tables do not hold yet. Slow the first time
      * after an update, so never on the main thread.
      */
+    @Synchronized
     fun open(context: Context) {
+        // Called from the app's start and from the list; the second is free.
+        if (ready) return
         CragDb.prepare(context)
         CragDb.migrateIfNeeded(context, storeDir(context))
         ready = true

@@ -53,25 +53,33 @@ automated check; anything user-visible needs a look on the phone.
   - `BrowseActivity` — the WebView: import, sync, log flow, geolocation.
   - `CragListActivity` → `CragActivity` → `TopoActivity`. The crag list's
     search box is the whole library search — crag names and climb names in one
-    box. `SearchActivity` shows one ticklist; `ListsActivity` lists them;
-    `MapActivity` is the osmdroid map.
+    box. `SearchActivity` shows one ticklist, the wishlist or the to-log list;
+    `ListsActivity` lists them; `MapActivity` is the osmdroid map. Screens
+    open crags by id (`crag_id`), never by name — names are not unique.
+  - `ClimbDialog` — the one climb dialog, shared by the crag and topo screens.
   - `AutoSync` — weekly logbook read in an unattached WebView, run on opening
     the app only.
-  - `CragDb` — the library in SQLite (crags, buttresses, climbs). Lists, maps
-    and search read columns; only opening a crag parses one. The JSON files
-    under `files/crags/` remain the scraped record and seed the tables.
+  - `CragDb` — the library in SQLite (crags, buttresses, climbs, parking, an
+    FTS4 table of climb names), WAL on. Every table is derived: the JSON files
+    under `files/crags/` are the record, a full crag is read from its file, and
+    an upgrade rebuilds the tables from them. Opened off the main thread from
+    `App.onCreate`, since that is where an upgrade runs.
   - `ImportQueue` / `QueueDrain` — a search queues crag URLs to
-    `files/queue.json`; batches of 40 are read in an unattached WebView while
-    the app is open, resumable across restarts. Refresh-all uses the same queue.
+    `files/queue.json`; batches of 40 are read in a hidden 1px WebView that
+    `App` moves into whichever screen is in front, so it keeps reading on any
+    screen while the app is open. Crags are struck off one at a time as they
+    land; a batch that fails entirely (no signal) changes nothing. Refresh-all
+    uses the same queue.
   - `MapSources` — OSM, Esri or Sentinel-2 tiles, all online and all keyless.
     OSM forbids bulk tile download, so there is no "save this area"; tiles
-    already seen are kept a year in a 600MB cache.
+    already seen are kept in a 600MB cache, refreshed monthly with signal;
+    expired tiles still draw offline.
   - `RotateGesture` — two-finger rotation, gated so zoom always wins.
   - `Pins.kt` — pin colour by dominant climb type, shared by map and legend.
   - `Data.kt` — `Climb`/`Buttress`/`Topo`/`Crag` and `CragStore`. One JSON file
     per crag under `files/crags/`; ticklists in `files/ticklists.json`; ticks,
-    attempts and wishlist in preferences **keyed by climb URL** so they survive
-    a re-import.
+    attempts, wishlist and to-log in preferences **keyed by climb URL** so they
+    survive a re-import, each behind one locked process-wide store.
   - `TopoView` — draws lines over the photo, pinch zoom, grade labels.
   - `PhotoFetch` / `PhotoCache` / `PhotosActivity` — crag and climb photos,
     saved per crag only when asked, viewed offline.
@@ -80,6 +88,10 @@ automated check; anything user-visible needs a look on the phone.
   - `TopoCache` — downloads topo pixels in Kotlin on a 4-thread pool with the
     session cookies. Must not block: all page script runs on one thread.
   - `Session` — whether UKC knows who we are, learned from rendered pages.
+  - `PageScript` — loads `extract.js` with a per-WebView token baked into its
+    closure. Every bridge method that writes or fetches checks it, so a frame
+    that is not our script cannot reach the library. Off-UKC navigations in
+    `BrowseActivity` open in the real browser.
   - `Updates` — self-update from this repo's GitHub releases.
   - `Walk`, `Nearby`, `Maps`, `PinOverlay`, `Units`, `Insets` — support.
 

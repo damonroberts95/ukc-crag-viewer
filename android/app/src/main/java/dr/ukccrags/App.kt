@@ -107,6 +107,12 @@ class App : Application() {
         // run that was killed, or from the app being replaced under it.
         ImportProgress.clear(this)
 
+        // The database upgrade runs on whichever thread opens it first. After
+        // process death the first screen back may be any of them, and most
+        // read on the main thread, so the opening happens here, off it, before
+        // any screen can ask.
+        Thread { runCatching { CragStore.open(this) } }.start()
+
         // OpenStreetMap refuses requests without a real user agent, and the
         // tile cache belongs in the app's own storage rather than shared space.
         Configuration.getInstance().apply {

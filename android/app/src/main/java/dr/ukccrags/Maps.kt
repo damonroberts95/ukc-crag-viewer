@@ -69,10 +69,12 @@ object Maps {
 
         val wantParking = Settings.directionsToParking(context) && parking.isNotEmpty()
 
-        // With parking turned off as the default there is no default left to
-        // pick between a car park and the pin, so a plain tap asks rather
+        // Until the reader has said which they want, a plain tap asks rather
         // than hiding the car park behind a long-press nobody knows about.
-        val undecided = !wantParking && parking.isNotEmpty()
+        // One rule for every screen, kept in Settings.
+        val undecided = Settings.asksBetween(
+            context, latitude != null && longitude != null, parking.isNotEmpty(),
+        )
 
         when {
             options.size == 1 -> options.first().second()
