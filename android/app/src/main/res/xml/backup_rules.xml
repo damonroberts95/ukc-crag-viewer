@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Backups before Android 12. The WebView's own directory holds the UKC session
+    cookie and Cloudflare clearance; restored onto another phone they would be a
+    signed-in session nobody signed in to. Everything else — crags, ticks,
+    lists — is the reader's and worth keeping.
+-->
+<full-backup-content>
+    <exclude domain="root" path="app_webview/" />
+    <exclude domain="sharedpref" path="WebViewChromiumPrefs.xml" />
+</full-backup-content>

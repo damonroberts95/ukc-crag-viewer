@@ -44,7 +44,14 @@ object Updates {
         val apkUrl: String,
         val pageUrl: String,
         val notes: String,
+        /** Bytes GitHub says the APK holds, 0 if it did not say. */
+        val apkSize: Long = 0L,
+        /** Lower-case hex SHA-256 from the asset's `digest`, empty if absent. */
+        val apkSha256: String = "",
     )
+
+    /** A download, or the reason it is not being installed. */
+    private class Fetched(val file: File?, val problem: Int = R.string.update_download_failed)
 
     /**
      * Checks in the background and reports back on the UI thread.
@@ -90,7 +97,7 @@ object Updates {
             instanceFollowRedirects = true
             setRequestProperty("Accept", "application/vnd.github+json")
             // GitHub turns away a caller that will not name itself.
-            setRequestProperty("User-Agent", "UkcCragViewer")
+            setRequestProperty("User-Agent", App.userAgent())
         }
 
         val body = if (connection.responseCode == HttpURLConnection.HTTP_OK) {
@@ -107,12 +114,18 @@ object Updates {
         val version = json.optString("tag_name").removePrefix("v")
         if (version.isBlank()) return@runCatching null
 
+        val apk = firstApk(json)
+
         Release(
             version = version,
-            apkUrl = firstApk(json),
+            apkUrl = apk?.optString("browser_download_url").orEmpty(),
             pageUrl = json.optString("html_url"),
             // Release notes are a nudge, not a changelog viewer.
             notes = json.optString("body").trim().take(300),
+            apkSize = apk?.optLong("size") ?: 0L,
+            apkSha256 = apk?.optString("digest").orEmpty()
+                .takeIf { it.startsWith("sha256:", ignoreCase = true) }
+                ?.substringAfter(':')?.lowercase().orEmpty(),
         )
     }.getOrElse {
         Log.w("UKC", "update check failed: $it")
@@ -124,17 +137,15 @@ object Updates {
      * matching on the extension rather than an exact filename means renaming it
      * there does not quietly stop updates here.
      */
-    private fun firstApk(json: JSONObject): String {
-        val assets = json.optJSONArray("assets") ?: return ""
+    private fun firstApk(json: JSONObject): JSONObject? {
+        val assets = json.optJSONArray("assets") ?: return null
 
         for (i in 0 until assets.length()) {
             val asset = assets.optJSONObject(i) ?: continue
-            if (asset.optString("name").endsWith(".apk", ignoreCase = true)) {
-                return asset.optString("browser_download_url")
-            }
+            if (asset.optString("name").endsWith(".apk", ignoreCase = true)) return asset
         }
 
-        return ""
+        return null
     }
 
     /**
@@ -222,17 +233,18 @@ object Updates {
             activity.runOnUiThread {
                 dialog.dismiss()
 
-                if (apk == null) {
+                val file = apk.file
+                if (file == null) {
                     // The release page is always a way out of a failed download.
                     MaterialAlertDialogBuilder(activity)
-                        .setMessage(R.string.update_download_failed)
+                        .setMessage(apk.problem)
                         .setPositiveButton(R.string.update_open) { _, _ ->
                             openInBrowser(activity, release.pageUrl)
                         }
                         .setNegativeButton(android.R.string.cancel, null)
                         .show()
                 } else {
-                    handToInstaller(activity, apk)
+                    handToInstaller(activity, file)
                 }
             }
         }.start()
@@ -243,12 +255,19 @@ object Updates {
      *
      * Written to a `.part` file and renamed on success, as TopoCache does, so a
      * download killed halfway cannot leave something that looks installable.
+     *
+     * Then checked three ways before the installer sees it, because the
+     * installer's own answers are poor: a short file or a changed one fails
+     * with "problem parsing the package", and a build signed with another key
+     * with "app not installed". The length against what the server and GitHub
+     * said, the SHA-256 against the release's digest when GitHub gives one, and
+     * the signing certificate against the one this app is installed with.
      */
     private fun download(
         activity: Activity,
         release: Release,
         onProgress: (read: Long, total: Long) -> Unit,
-    ): File? = runCatching {
+    ): Fetched = runCatching {
         val dir = File(activity.cacheDir, DOWNLOADS).apply { mkdirs() }
 
         // One name, so repeated checks cannot silt the cache up with old builds.
@@ -259,16 +278,17 @@ object Updates {
             connectTimeout = 15000
             readTimeout = 30000
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "UkcCragViewer")
+            setRequestProperty("User-Agent", App.userAgent())
         }
 
         if (connection.responseCode != HttpURLConnection.HTTP_OK) {
             connection.disconnect()
-            return@runCatching null
+            return@runCatching Fetched(null)
         }
 
-        val total = connection.contentLength.toLong()
+        val total = connection.contentLengthLong
         var read = 0L
+        val sha = java.security.MessageDigest.getInstance("SHA-256")
 
         connection.inputStream.use { input ->
             partial.outputStream().use { output ->
@@ -279,6 +299,7 @@ object Updates {
                     if (n < 0) break
 
                     output.write(buffer, 0, n)
+                    sha.update(buffer, 0, n)
                     read += n
                     onProgress(read, total)
                 }
@@ -287,16 +308,73 @@ object Updates {
 
         connection.disconnect()
 
-        if (read <= 0L) return@runCatching null
+        val short = read <= 0L || (total > 0 && read != total) ||
+            (release.apkSize > 0 && read != release.apkSize)
+        if (short) {
+            Log.w("UKC", "update download: $read bytes of $total (GitHub says ${release.apkSize})")
+            partial.delete()
+            return@runCatching Fetched(null, R.string.update_incomplete)
+        }
+
+        val hex = sha.digest().joinToString("") { "%02x".format(it) }
+        if (release.apkSha256.isNotEmpty() && hex != release.apkSha256) {
+            Log.w("UKC", "update download: sha256 $hex, release says ${release.apkSha256}")
+            partial.delete()
+            return@runCatching Fetched(null, R.string.update_corrupt)
+        }
 
         target.delete()
-        if (!partial.renameTo(target)) return@runCatching null
+        if (!partial.renameTo(target)) return@runCatching Fetched(null)
 
-        target
+        if (sameSigner(activity, target) == false) {
+            target.delete()
+            return@runCatching Fetched(null, R.string.update_wrong_key)
+        }
+
+        Fetched(target)
     }.getOrElse {
         Log.w("UKC", "update download failed: $it")
-        null
+        Fetched(null)
     }
+
+    /**
+     * Whether [apk] is signed by a key this install accepts: one of its
+     * certificates is in the installed app's signing history, which allows for
+     * a rotated key. Null when Android will not say, in which case the
+     * installer is left to decide.
+     */
+    @Suppress("DEPRECATION")
+    private fun sameSigner(activity: Activity, apk: File): Boolean? = runCatching {
+        val pm = activity.packageManager
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val flags = android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+            val archive = pm.getPackageArchiveInfo(apk.path, flags) ?: return@runCatching null
+            if (archive.packageName != activity.packageName) return@runCatching false
+
+            val theirs = archive.signingInfo ?: return@runCatching null
+            val ours = pm.getPackageInfo(activity.packageName, flags).signingInfo
+                ?: return@runCatching null
+
+            val offered = if (theirs.hasMultipleSigners()) theirs.apkContentsSigners
+            else theirs.signingCertificateHistory
+            val accepted = if (ours.hasMultipleSigners()) ours.apkContentsSigners
+            else ours.signingCertificateHistory
+
+            if (offered.isNullOrEmpty() || accepted.isNullOrEmpty()) return@runCatching null
+            offered.any { it in accepted }
+        } else {
+            val flags = android.content.pm.PackageManager.GET_SIGNATURES
+            val archive = pm.getPackageArchiveInfo(apk.path, flags) ?: return@runCatching null
+            if (archive.packageName != activity.packageName) return@runCatching false
+
+            val offered = archive.signatures ?: return@runCatching null
+            val accepted = pm.getPackageInfo(activity.packageName, flags).signatures
+                ?: return@runCatching null
+
+            offered.toSet() == accepted.toSet()
+        }
+    }.getOrNull()
 
     /**
      * Whether this app may install packages. Below Oreo the manifest permission

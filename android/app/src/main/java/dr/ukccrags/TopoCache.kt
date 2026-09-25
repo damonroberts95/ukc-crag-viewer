@@ -54,25 +54,55 @@ object TopoCache {
     /** Photos still coming down. */
     fun queued(): Int = pending.get()
 
+    /** Topo ids in flight, so one handed over twice is fetched once. */
+    private val inFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private val TOPO_ID = Regex("^\\d+$")
+
     /**
      * Starts a download and returns at once. A photo already on disk is left
      * alone: a topo id names one photo, and refreshing the library used to
      * fetch and re-encode every one of them again — the bulk of the time a
-     * refresh took. A single-crag refresh deletes its photos first, so it
-     * still gets fresh ones.
+     * refresh took. [force] is the single-crag refresh, whose whole point is
+     * the newest pictures; it downloads over what is there.
+     *
+     * The id and link come from page script, so both are checked: an id that
+     * is not a number could name a path, and a link off UKC's image host
+     * would carry the session's cookies somewhere else. False when refused.
      */
-    fun enqueue(context: Context, topoId: String, url: String) {
+    fun enqueue(context: Context, topoId: String, url: String, force: Boolean = false): Boolean {
         val app = context.applicationContext
-        if (isCached(app, topoId)) return
+
+        if (!TOPO_ID.matches(topoId) || !PageScript.isImageUrl(url)) {
+            AppLog.add(app, "topos: refused a photo link for topo ${topoId.take(20)} " +
+                "on ${runCatching { java.net.URI(url).host }.getOrNull()}")
+            return false
+        }
+
+        if (!force && isCached(app, topoId)) return true
+        if (!inFlight.add(topoId)) return true
+
         pending.incrementAndGet()
 
         pool.execute {
             try {
                 download(app, topoId, url)
             } finally {
+                inFlight.remove(topoId)
                 pending.decrementAndGet()
             }
         }
+
+        return true
+    }
+
+    /**
+     * Deletes the photos of topos a crag no longer has. A refresh saves over
+     * the old record rather than wiping it first, so this is what stops
+     * dropped topos lingering on disk.
+     */
+    fun forget(context: Context, topoIds: Collection<Long>) {
+        for (id in topoIds) file(context, id.toString()).delete()
     }
 
     /**
@@ -96,6 +126,8 @@ object TopoCache {
      * the rotated ones, and TopoView undoes that as it draws.
      */
     fun saveImage(context: Context, url: String, target: File, maxEdge: Int): Boolean = runCatching {
+        if (!PageScript.isImageUrl(url)) return@runCatching false
+
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15000
             readTimeout = 30000
@@ -107,8 +139,13 @@ object TopoCache {
             }
         }
 
-        val bytes = connection.inputStream.use { it.readBytes() }
+        val bytes = connection.inputStream.use { stream ->
+            // A redirect is followed for the CDN's sake, but not off UKC's hosts.
+            if (!PageScript.isImageUrl(connection.url.toString())) null else stream.readBytes()
+        }
         connection.disconnect()
+
+        if (bytes == null) return@runCatching false
 
         if (bytes.isEmpty()) return@runCatching false
 
@@ -124,11 +161,13 @@ object TopoCache {
         ) ?: return@runCatching false
 
         target.parentFile?.mkdirs()
-        val partial = File(target.path + ".part")
+
+        // Named per download, so two fetches of one picture never share a file.
+        val partial = File(target.path + "." + java.util.UUID.randomUUID() + ".part")
 
         partial.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 82, it) }
         bitmap.recycle()
-        partial.renameTo(target)
+        if (!partial.renameTo(target)) partial.delete()
 
         target.exists()
     }.getOrElse {

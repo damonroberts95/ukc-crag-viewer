@@ -31,6 +31,33 @@ class BrowseActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityBrowseBinding
     private var script: String = ""
+
+    /** Presented by this screen's script on every call that stores or fetches. */
+    private val token = PageScript.newToken()
+
+    /** Set once the screen is going, so late callbacks from the page do nothing. */
+    private var gone = false
+
+    /** Between onStart and onStop. */
+    private var visible = false
+
+    /** Whether this screen currently holds the queue off. */
+    private var holding = false
+
+    /** The main page failed to load: no signal, most likely. */
+    private var loadFailed = false
+
+    /**
+     * Crag URL to the topo ids it had before a refresh re-read it. A refresh
+     * saves over the old record rather than deleting it first, so a failed
+     * read loses nothing; the photos of topos UKC has since dropped are
+     * cleared once the new copy is safely stored.
+     */
+    private val refreshing = java.util.concurrent.ConcurrentHashMap<String, Set<Long>>()
+
+    /** A single-crag refresh wants the newest photos, not the ones on disk. */
+    @Volatile
+    private var freshTopos = false
     /**
      * True while an import, refresh or sync is running.
      *
@@ -45,6 +72,7 @@ class BrowseActivity : AppCompatActivity() {
 
             runOnUiThread {
                 ImportState.running = value
+                updateHold()
 
                 if (value) {
                     window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -54,6 +82,34 @@ class BrowseActivity : AppCompatActivity() {
                 }
             }
         }
+
+    /**
+     * Holds the queue off while this screen is in front or has work running.
+     *
+     * Two readers in one renderer is what killed the app, so the queue waits
+     * — but only while there is a reason to. Held for the life of the screen,
+     * it stayed held behind "run in background" and after the screen closed,
+     * since the release came after the list had already been told no.
+     */
+    private fun updateHold() {
+        val want = !gone && (visible || busy)
+        if (want == holding) return
+        holding = want
+        QueueDrain.holdWhileBrowsing(want)
+    }
+
+    /** What the button says with nothing to offer yet, by why the screen was opened. */
+    private fun restingLabel(): String = getString(
+        when {
+            intent.getBooleanExtra(EXTRA_LOG_CLIMB, false) -> R.string.log_finding
+            refreshFlow -> R.string.refresh_title
+            else -> R.string.browse_title
+        }
+    )
+
+    /** Opened to refresh one crag, rather than to find new ones. */
+    private val refreshFlow: Boolean
+        get() = intent.hasExtra(EXTRA_REFRESH_URL)
 
     /** Written from the page's worker threads, read on the main thread. */
     private val failures = mutableListOf<String>()
@@ -169,6 +225,8 @@ class BrowseActivity : AppCompatActivity() {
             when {
                 signingIn -> R.string.sign_in
                 syncOnly -> R.string.sync_ticks
+                intent.getBooleanExtra(EXTRA_LOG_CLIMB, false) -> R.string.log_title
+                refreshFlow -> R.string.refresh_title
                 else -> R.string.browse_title
             }
         )
@@ -180,10 +238,10 @@ class BrowseActivity : AppCompatActivity() {
         // Lets the import be driven and inspected from adb in debug builds.
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
 
-        // While this screen is reading pages, the queue does not.
-        QueueDrain.holdWhileBrowsing(true)
+        // While this screen is reading pages, the queue does not: see
+        // updateHold, run from onStart and whenever the work starts or stops.
 
-        script = assets.open("extract.js").bufferedReader().use { it.readText() }
+        script = PageScript.load(this, token, watchKind = true).orEmpty()
 
         // A "no" to the geolocation prompt is remembered per origin for the
         // life of the app's data, and nothing in the UI can undo it. Start
@@ -276,8 +334,46 @@ class BrowseActivity : AppCompatActivity() {
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 logging = false
+                loadFailed = false
                 binding.action.isEnabled = false
-                binding.action.text = getString(R.string.browse_title)
+                binding.action.text = restingLabel()
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: android.webkit.WebResourceRequest?,
+                error: android.webkit.WebResourceError?,
+            ) {
+                // A missing image is not a missing page.
+                if (request?.isForMainFrame == true) {
+                    loadFailed = true
+                    AppLog.add(this@BrowseActivity, "browser: could not open the page — ${error?.description}")
+                }
+            }
+
+            /**
+             * This screen is for UKC. The bridge is on every page it shows, so
+             * a link out — an advert, a club site in a crag's notes — goes to
+             * the phone's browser instead of opening here with the app's hooks
+             * in it. Cloudflare's challenge pages are UKC's own gate and stay.
+             */
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: android.webkit.WebResourceRequest?,
+            ): Boolean {
+                val uri = request?.url ?: return false
+                if (!request.isForMainFrame) return false
+
+                val scheme = uri.scheme?.lowercase()
+                if (scheme == "about") return false
+                if ((scheme == "https" || scheme == "http") &&
+                    (PageScript.isUkc(uri) || PageScript.isChallenge(uri))
+                ) {
+                    return false
+                }
+
+                openOutside(uri)
+                return true
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -301,16 +397,35 @@ class BrowseActivity : AppCompatActivity() {
         binding.web.loadUrl(intent.getStringExtra(EXTRA_URL) ?: START_URL)
     }
 
+    private fun openOutside(uri: android.net.Uri) {
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+            .addCategory(android.content.Intent.CATEGORY_BROWSABLE)
+
+        runCatching { startActivity(intent) }.onFailure {
+            Toast.makeText(this, R.string.no_browser, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     /**
      * Finds the climb page's own "Add to Logbook" button. The page finishes
      * itself off in script, so the button may not exist yet; try a few times,
      * then give up quietly rather than nag.
      */
     private fun prepareLog(attempt: Int = 0) {
-        if (!intent.getBooleanExtra(EXTRA_LOG_CLIMB, false)) return
+        if (gone || !intent.getBooleanExtra(EXTRA_LOG_CLIMB, false)) return
+
+        // With no signal the page is Chromium's error page, which has no
+        // button either — and "sign in" is the wrong thing to tell someone
+        // standing under a crag with no bars.
+        if (loadFailed) {
+            intent.removeExtra(EXTRA_LOG_CLIMB)
+            binding.action.text = getString(R.string.browse_title)
+            Toast.makeText(this, R.string.log_no_signal, Toast.LENGTH_LONG).show()
+            return
+        }
 
         binding.web.evaluateJavascript("window.__ukcPrepareLog()") { raw ->
-            val ready = runCatching { JSONObject(unquote(raw)).optBoolean("ready") }
+            val ready = runCatching { JSONObject(PageScript.unquote(raw)).optBoolean("ready") }
                 .getOrDefault(false)
 
             if (ready) {
@@ -327,7 +442,12 @@ class BrowseActivity : AppCompatActivity() {
                 binding.web.postDelayed({ prepareLog(attempt + 1) }, 500)
             } else {
                 intent.removeExtra(EXTRA_LOG_CLIMB)
-                Toast.makeText(this, R.string.log_not_ready, Toast.LENGTH_LONG).show()
+                binding.action.text = getString(R.string.browse_title)
+                Toast.makeText(
+                    this,
+                    if (loadFailed) R.string.log_no_signal else R.string.log_not_ready,
+                    Toast.LENGTH_LONG,
+                ).show()
             }
         }
     }
@@ -353,7 +473,7 @@ class BrowseActivity : AppCompatActivity() {
     /** Hands the press straight to UKC's "Add to Logbook". */
     private fun submitLog() {
         binding.web.evaluateJavascript("window.__ukcSubmitLog()") { raw ->
-            val ready = runCatching { JSONObject(unquote(raw)).optBoolean("ready") }
+            val ready = runCatching { JSONObject(PageScript.unquote(raw)).optBoolean("ready") }
                 .getOrDefault(false)
 
             if (ready) {
@@ -380,7 +500,7 @@ class BrowseActivity : AppCompatActivity() {
         showProgress(getString(R.string.importing_crags))
 
         binding.web.evaluateJavascript(
-            "window.__ukcRefreshCrags(${JSONObject.quote(json)}, $DELAY_MS, $WORKERS)",
+            "window.__ukcRefreshCrags(${JSONObject.quote(json)}, $DELAY_MS, $WORKERS, $DELAY_MS)",
             null,
         )
     }
@@ -407,18 +527,19 @@ class BrowseActivity : AppCompatActivity() {
     }
 
     /**
-     * Re-reads stored crags from UKC so grades, climbs and topos stay current.
-     * With [EXTRA_REFRESH_URL] set, only that one crag is re-read.
+     * Re-reads one stored crag, [EXTRA_REFRESH_URL], so its grades, climbs and
+     * topos are current. Refreshing the whole library goes through the queue.
+     *
+     * Saved over the old record, never deleted first: a read that fails —
+     * no signal, a throttle — used to leave the crag gone from the library.
      */
     private fun refreshCrags() {
         if (busy) return
 
         val only = intent.getStringExtra(EXTRA_REFRESH_URL)
+        val card = CragStore.cards(this).firstOrNull { it.sourceUrl == only }
 
-        val stored = CragStore.cards(this)
-            .let { all -> if (only == null) all else all.filter { it.sourceUrl == only } }
-
-        if (stored.isEmpty()) {
+        if (card == null) {
             Toast.makeText(this, R.string.nothing_to_refresh, Toast.LENGTH_LONG).show()
             return
         }
@@ -428,22 +549,16 @@ class BrowseActivity : AppCompatActivity() {
         binding.action.isEnabled = false
         synchronized(failures) { failures.clear() }
 
-        // Clear first: a refresh should replace what is stored, not merge into
-        // it, so climbs and topos that UKC has dropped do not linger.
-        val name = stored.first().area
-        val list = JSONArray()
-        for (crag in stored) {
-            list.put(JSONObject().put("name", crag.area).put("url", crag.sourceUrl))
-        }
-        stored.forEach { card -> CragStore.byId(this, card.id)?.let { CragStore.forget(this, it) } }
+        refreshing[card.sourceUrl] =
+            CragStore.byId(this, card.id)?.topos?.map { it.topoId }?.toSet().orEmpty()
+        freshTopos = true
 
-        showProgress(
-            if (only == null) getString(R.string.refresh_crags)
-            else getString(R.string.refreshing_one, name)
-        )
+        val list = JSONArray().put(JSONObject().put("name", card.area).put("url", card.sourceUrl))
+
+        showProgress(getString(R.string.refreshing_one, card.area))
 
         binding.web.evaluateJavascript(
-            "window.__ukcRefreshCrags(${JSONObject.quote(list.toString())}, $DELAY_MS, $WORKERS)",
+            "window.__ukcRefreshCrags(${JSONObject.quote(list.toString())}, $DELAY_MS, $WORKERS, $DELAY_MS)",
             null,
         )
     }
@@ -483,9 +598,13 @@ class BrowseActivity : AppCompatActivity() {
 
     /** Loads the extractor, then asks the page what it is so we can label the button. */
     private fun inject() {
+        if (gone) return
+
         binding.web.evaluateJavascript(script) {
+            if (gone) return@evaluateJavascript
             binding.web.evaluateJavascript("window.__ukcPageKind()") { raw ->
-                applyKind(unquote(raw))
+                if (gone) return@evaluateJavascript
+                applyKind(PageScript.unquote(raw))
                 noteSignedIn()
                 syncWhenReady()
             }
@@ -501,8 +620,12 @@ class BrowseActivity : AppCompatActivity() {
         val url = binding.web.url.orEmpty()
         if (!url.contains("ukclimbing.com")) return
 
+        // Chromium's own error page keeps UKC's address but none of its
+        // markers; read as "signed out", it signed the reader out for no signal.
+        if (loadFailed) return
+
         binding.web.evaluateJavascript("window.__ukcSignedIn()") { raw ->
-            val id = runCatching { JSONObject(unquote(raw)).optLong("userId") }.getOrDefault(0L)
+            val id = runCatching { JSONObject(PageScript.unquote(raw)).optLong("userId") }.getOrDefault(0L)
             Session.saw(this, id)
             invalidateOptionsMenu()
 
@@ -516,19 +639,6 @@ class BrowseActivity : AppCompatActivity() {
                 Toast.makeText(this, R.string.signed_in, Toast.LENGTH_LONG).show()
                 finish()
             }
-        }
-    }
-
-    /** evaluateJavascript hands back a JSON *string literal*, so unwrap it. */
-    private fun unquote(raw: String?): String {
-        if (raw == null || raw == "null") return "{}"
-
-        return if (raw.startsWith("\"")) {
-            raw.substring(1, raw.length - 1)
-                .replace("\\\"", "\"")
-                .replace("\\\\", "\\")
-        } else {
-            raw
         }
     }
 
@@ -549,7 +659,7 @@ class BrowseActivity : AppCompatActivity() {
                 binding.action.isEnabled = count > 0
             }
             else -> {
-                binding.action.text = getString(R.string.browse_title)
+                binding.action.text = restingLabel()
                 binding.action.isEnabled = false
             }
         }
@@ -565,7 +675,8 @@ class BrowseActivity : AppCompatActivity() {
      */
     private fun queueResults() {
         binding.web.evaluateJavascript("window.__ukcResultRows()") { raw ->
-            val json = unquote(raw)
+            if (gone) return@evaluateJavascript
+            val json = PageScript.unquote(raw)
 
             val found = runCatching {
                 val array = JSONArray(json)
@@ -608,8 +719,7 @@ class BrowseActivity : AppCompatActivity() {
         showProgress(getString(R.string.importing_crags))
 
         binding.web.evaluateJavascript("window.__ukcPageKind()") { raw ->
-            val json = raw?.trim('"')?.replace("\\\"", "\"")?.replace("\\\\", "\\")
-            val kind = runCatching { JSONObject(json ?: "{}") }.getOrNull()
+            val kind = runCatching { JSONObject(PageScript.unquote(raw)) }.getOrNull()
 
             if (kind?.optString("kind") == "results") {
                 queueResults()
@@ -647,7 +757,7 @@ class BrowseActivity : AppCompatActivity() {
     }
 
     private fun syncTicks(quiet: Boolean = false) {
-        if (busy) return
+        if (busy || gone) return
 
         busy = true
         quietSync = quiet
@@ -662,18 +772,61 @@ class BrowseActivity : AppCompatActivity() {
         )
     }
 
+    override fun onStart() {
+        super.onStart()
+        visible = true
+        updateHold()
+    }
+
+    override fun onStop() {
+        visible = false
+        updateHold()
+        super.onStop()
+    }
+
+    /**
+     * The WebView goes with the screen, and so does anything it was doing. A
+     * job cut short leaves no count in the shade and no hold on the queue.
+     */
     override fun onDestroy() {
-        QueueDrain.holdWhileBrowsing(false)
+        val cutShort = busy
+        gone = true
+
         hideProgress()
+        busy = false
+        if (holding) {
+            holding = false
+            QueueDrain.holdWhileBrowsing(false)
+        }
+        if (cutShort) {
+            AppLog.add(this, "browser: closed with a job still running")
+            ImportProgress.clear(this)
+        }
+
+        (binding.web.parent as? android.view.ViewGroup)?.removeView(binding.web)
+        binding.web.destroy()
+
         super.onDestroy()
     }
 
     /** Called from the page. Every method hops back to the main thread. */
     private inner class Bridge {
 
+        /** False when the crag could not be kept, so the page counts it as failed. */
         @JavascriptInterface
-        fun saveCrag(json: String) {
-            val crag = CragStore.save(this@BrowseActivity, json) ?: return
+        fun saveCrag(key: String, json: String): Boolean {
+            if (!PageScript.matches(token, key)) return false
+
+            val crag = CragStore.save(this@BrowseActivity, json)
+            if (crag == null) {
+                AppLog.add(this@BrowseActivity, "import: a crag came back that could not be stored")
+                return false
+            }
+
+            // Stored: now the photos of topos it no longer has can go.
+            refreshing.remove(crag.sourceUrl)?.let { before ->
+                TopoCache.forget(this@BrowseActivity, before - crag.topos.map { it.topoId }.toSet())
+            }
 
             // The crag page states the reader's own ascents, so a signed-in
             // import ticks its own climbs without asking the logbook.
@@ -683,6 +836,7 @@ class BrowseActivity : AppCompatActivity() {
             Attempts(this@BrowseActivity).addAll(
                 climbs.filter { it.attempted && !it.ticked }.map { it.url }
             )
+            return true
         }
 
         /** Pushed by the page's MutationObserver when AJAX swaps the content. */
@@ -691,17 +845,15 @@ class BrowseActivity : AppCompatActivity() {
             runOnUiThread { applyKind(json) }
         }
 
-        @JavascriptInterface
-        fun hasCrag(id: String): Boolean = CragStore.has(this@BrowseActivity, id)
-
         /**
-         * Downloads a topo photo from the link the page just handed over.
-         * Runs on the bridge's own thread, so blocking here is fine.
+         * Queues a topo photo from the link the page just handed over, and
+         * returns at once: all page script runs on one thread, and a download
+         * held here would stall every worker.
          */
         @JavascriptInterface
-        fun fetchTopoImage(topoId: String, url: String): Boolean {
-            TopoCache.enqueue(this@BrowseActivity, topoId, url)
-            return true
+        fun fetchTopoImage(key: String, topoId: String, url: String): Boolean {
+            if (!PageScript.matches(token, key)) return false
+            return TopoCache.enqueue(this@BrowseActivity, topoId, url, force = freshTopos)
         }
 
         @JavascriptInterface
@@ -714,7 +866,8 @@ class BrowseActivity : AppCompatActivity() {
 
         /** The CSV export names climbs; the app turns those into climb URLs. */
         @JavascriptInterface
-        fun saveTickNames(json: String) {
+        fun saveTickNames(key: String, json: String) {
+            if (!PageScript.matches(token, key)) return
             val entries = runCatching {
                 val array = JSONArray(json)
                 (0 until array.length()).mapNotNull { index ->
@@ -729,7 +882,8 @@ class BrowseActivity : AppCompatActivity() {
 
         /** UKC's wishlist arrives as climb links, so it needs no matching. */
         @JavascriptInterface
-        fun saveWishlist(json: String) {
+        fun saveWishlist(key: String, json: String) {
+            if (!PageScript.matches(token, key)) return
             val urls = runCatching {
                 val array = JSONArray(json)
                 (0 until array.length()).map { array.optString(it) }.filter { it.isNotBlank() }
@@ -738,14 +892,19 @@ class BrowseActivity : AppCompatActivity() {
             Wishlist(this@BrowseActivity).replaceWith(urls)
         }
 
-        /** UKC's ticklists, the reader's own and any they subscribe to. */
+        /**
+         * UKC's ticklists, the reader's own and any they subscribe to. Merged
+         * rather than replaced unless every list was read.
+         */
         @JavascriptInterface
-        fun saveLists(json: String) {
-            Lists.replaceWith(this@BrowseActivity, json)
+        fun saveLists(key: String, json: String, complete: Boolean) {
+            if (!PageScript.matches(token, key)) return
+            AutoSync.saveTicklists(this@BrowseActivity, json, complete)
         }
 
         @JavascriptInterface
-        fun saveTicks(json: String) {
+        fun saveTicks(key: String, json: String) {
+            if (!PageScript.matches(token, key)) return
             val urls = runCatching {
                 val array = org.json.JSONArray(json)
                 (0 until array.length()).map { array.getString(it) }
@@ -756,13 +915,15 @@ class BrowseActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
-        fun ticksDone(found: Int) {
+        fun ticksDone(key: String, found: Int) {
+            if (!PageScript.matches(token, key)) return
             total = found
 
             // Counts as this week's sync, so the weekly one does not repeat it.
             AutoSync.ran(this@BrowseActivity)
 
             runOnUiThread {
+                if (gone) return@runOnUiThread
                 busy = false
                 hideProgress()
 
@@ -789,6 +950,7 @@ class BrowseActivity : AppCompatActivity() {
             AppLog.add(this@BrowseActivity, "logbook sync failed: $reason")
 
             runOnUiThread {
+                if (gone) return@runOnUiThread
                 busy = false
                 hideProgress()
 
@@ -816,7 +978,8 @@ class BrowseActivity : AppCompatActivity() {
 
         /** Records why a crag didn't import, so the run can name it at the end. */
         @JavascriptInterface
-        fun cragFailed(name: String, url: String, reason: String) {
+        fun cragFailed(key: String, name: String, url: String, reason: String) {
+            if (!PageScript.matches(token, key)) return
             AppLog.add(this@BrowseActivity, "import: could not read $name — $reason")
             synchronized(failures) { failures += "$name — $reason" }
         }
@@ -850,12 +1013,14 @@ class BrowseActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
-        fun finished(ok: Int, failed: Int) {
-            runOnUiThread { whenPhotosLand { report(ok, failed) } }
+        fun finished(key: String, ok: Int, failed: Int) {
+            if (!PageScript.matches(token, key)) return
+            runOnUiThread { if (!gone) whenPhotosLand { report(ok, failed) } }
         }
 
         /** The pages are read long before their photos land; wait them out. */
         private fun whenPhotosLand(then: () -> Unit) {
+            if (gone) return
             val waiting = TopoCache.queued()
 
             if (waiting <= 0) {
@@ -873,9 +1038,11 @@ class BrowseActivity : AppCompatActivity() {
 
         private fun report(ok: Int, failed: Int) {
             run {
+                if (gone) return
                 busy = false
+                freshTopos = false
+                refreshing.clear()
                 hideProgress()
-                CragStore.invalidate()
 
                 val missed = synchronized(failures) { failures.toList() }
 
@@ -915,8 +1082,12 @@ class BrowseActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun failed(reason: String) {
+            AppLog.add(this@BrowseActivity, "import: stopped — $reason")
             runOnUiThread {
+                if (gone) return@runOnUiThread
                 busy = false
+                freshTopos = false
+                refreshing.clear()
                 hideProgress()
                 Toast.makeText(
                     this@BrowseActivity,
