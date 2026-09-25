@@ -894,7 +894,7 @@ class CragListActivity : AppCompatActivity() {
         // place; only a new search or sort goes back to the top.
         val toTop = scrollToTop
         scrollToTop = false
-        adapter.submitList(rows) { if (toTop) binding.list.scrollToPosition(0) }
+        adapter.submitKeepingPlace(rows, ::rowKey) { if (toTop) binding.list.scrollToPosition(0) }
     }
 
     /** A row of results: a section label, a crag, or a climb inside one. */
@@ -1037,6 +1037,13 @@ class CragListActivity : AppCompatActivity() {
                 is Row.ClimbRow -> bindClimb((holder as ClimbHolder).item, row)
             }
         }
+    }
+
+    /** What makes a row the same row across renders; labels by their text. */
+    private fun rowKey(row: Row): Any = when (row) {
+        is Row.Label -> "label:" + row.text
+        is Row.CragHit -> "crag:" + row.crag.id
+        is Row.ClimbRow -> "climb:" + row.hit.url
     }
 
     private object RowDiff : DiffUtil.ItemCallback<Row>() {

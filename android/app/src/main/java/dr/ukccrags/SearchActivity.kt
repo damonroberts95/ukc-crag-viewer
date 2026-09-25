@@ -201,7 +201,7 @@ class SearchActivity : AppCompatActivity() {
             else -> resources.getQuantityString(R.plurals.climbs, shown.size, shown.size)
         }
 
-        adapter.submitList(shown.map { Found(it, ticks.has(it.url), toLog.has(it.url)) })
+        adapter.submitKeepingPlace(shown.map { Found(it, ticks.has(it.url), toLog.has(it.url)) }, { it.hit.url })
     }
 
     /** A hit and the marks it is drawn with, so a change of mark redraws the row. */

@@ -603,7 +603,12 @@ class CragActivity : AppCompatActivity() {
             sorted.forEach { rows.add(climbRow(it.second, it.first)) }
         }
 
-        adapter.submitList(rows) { then() }
+        adapter.submitKeepingPlace(rows, {
+            when (it) {
+                is Row.ButtressRow -> "buttress:" + it.buttress.name
+                is Row.ClimbRow -> "climb:" + it.climb.url
+            }
+        }) { then() }
 
         binding.progress.text = resources.getQuantityString(
             R.plurals.crag_progress_long,
