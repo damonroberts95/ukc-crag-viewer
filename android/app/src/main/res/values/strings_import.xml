@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The browser screen, opened for one job rather than to add crags. -->
+    <string name="log_title">Log an ascent</string>
+    <string name="log_finding">Finding UKC’s logbook button…</string>
+    <string name="log_no_signal">No signal — UKC’s page didn’t load. Log this climb once you’re back in range.</string>
+    <string name="refresh_title">Refresh crag</string>
+
+    <!-- Self-update: why a downloaded build was not handed to the installer. -->
+    <string name="update_incomplete">The download was cut short. Try again, or fetch the APK from the release page.</string>
+    <string name="update_corrupt">The download doesn’t match what GitHub says the release holds, so it wasn’t installed.</string>
+    <string name="update_wrong_key">This build is signed with a different key from the one installed, so Android would refuse it. Nothing was changed.</string>
+</resources>

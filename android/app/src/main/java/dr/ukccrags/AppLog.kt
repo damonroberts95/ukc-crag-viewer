@@ -51,6 +51,16 @@ object AppLog {
         return runCatching { stored.readText() }.getOrDefault("")
     }
 
+    /**
+     * Length and modification time together, which change whenever a line is
+     * added or the file is trimmed. A reader can ask this every second for
+     * the price of a stat, and read the file only when it has moved.
+     */
+    fun version(context: Context): Pair<Long, Long> {
+        val stored = file(context)
+        return stored.length() to stored.lastModified()
+    }
+
     fun clear(context: Context) {
         file(context).delete()
     }

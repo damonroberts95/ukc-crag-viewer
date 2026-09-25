@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Backups and device-to-device transfer from Android 12. Same rule as
+    backup_rules.xml: the WebView's directory carries the UKC session and
+    Cloudflare clearance, and stays on this phone.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="app_webview/" />
+        <exclude domain="sharedpref" path="WebViewChromiumPrefs.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" path="app_webview/" />
+        <exclude domain="sharedpref" path="WebViewChromiumPrefs.xml" />
+    </device-transfer>
+</data-extraction-rules>

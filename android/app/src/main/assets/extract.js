@@ -8,6 +8,17 @@
   window.__ukcReady = true;
 
   const ORIGIN = 'https://www.ukclimbing.com';
+
+  /*
+   * The app writes a fresh token in here for each WebView, and every bridge
+   * call that stores or fetches presents it. `Android` is visible to every
+   * frame on the page, advert iframes included; this closure is not, so only
+   * this script can make those calls count.
+   */
+  const TOKEN = '__UKC_BRIDGE_TOKEN__';
+
+  /** Only the browser screen has a button for the page kind to label. */
+  const WATCH_KIND = '__UKC_WATCH__' === 'yes';
   const clean = (v) => (v || '').replace(/\s+/g, ' ').trim();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -256,9 +267,15 @@
       const html = document.documentElement.outerHTML;
       const parsed = await parseCragData(html, url);
       const crag = (parsed && !parsed.empty) ? parsed : parseCrag(document, html, url);
-      if (!crag) { Android.failed('no climbs on this page'); return; }
-      Android.saveCrag(JSON.stringify(crag));
-      Android.finished(1, 0);
+      if (!crag || crag.topoFailed) {
+        Android.failed(crag ? 'topos: ' + crag.topoFailed : 'no climbs on this page');
+        return;
+      }
+      if (Android.saveCrag(TOKEN, JSON.stringify(crag)) === false) {
+        Android.failed('could not store the crag');
+        return;
+      }
+      Android.finished(TOKEN, 1, 0);
     } catch (e) {
       Android.failed(String(e).slice(0, 120));
     }
@@ -280,16 +297,16 @@
     } catch (e) { /* bridge not ready yet */ }
   }
 
-  let timer = null;
+  if (WATCH_KIND) {
+    let timer = null;
 
-  new MutationObserver(() => {
-    clearTimeout(timer);
-    timer = setTimeout(notifyKind, 400);
-  }).observe(document.documentElement, { childList: true, subtree: true });
+    new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(notifyKind, 400);
+    }).observe(document.documentElement, { childList: true, subtree: true });
 
-  setTimeout(notifyKind, 100);
-
-  const cragIdOf = (url) => (url.match(/-(\d+)\/?$/) || [])[1] || url;
+    setTimeout(notifyKind, 100);
+  }
 
   // A crag page builds its table in ~200ms, but the request has to cross the
   // network first: four seconds was tight enough that a slow patch — a VPN, a
@@ -304,6 +321,13 @@
     return /just a moment|checking your browser|verify you are human|too many requests/i
       .test(html.slice(0, 4000));
   }
+
+  /*
+   * A refusal does not always come with a page that says so: Cloudflare's 403
+   * and a 429 or 503 from UKC are the same message in a status code.
+   */
+  const THROTTLE_STATUS = [403, 429, 503];
+  const throttledStatus = (response) => THROTTLE_STATUS.includes(response.status);
 
   /*
    * The climbs are not really in the HTML at all. UKC ships them as JSON in an
@@ -476,9 +500,20 @@
    * into the page itself, so they cost nothing extra to keep.
    */
   function cragNotes(html) {
+    // A crag page runs to megabytes, most of it the climbs payload, and the
+    // notes are a few kilobytes of it. Parse only the stretch around the two
+    // boxes: a cut-off tail is harmless, since the parser closes what is open.
+    const starts = ['features_info', 'approach_info']
+      .map((id) => html.search(new RegExp('id\\s*=\\s*["\']' + id + '["\']')))
+      .filter((i) => i >= 0);
+    if (!starts.length) return '';
+
+    const from = Math.max(0, html.lastIndexOf('<', Math.min(...starts)));
+    const to = Math.min(html.length, Math.max(...starts) + NOTES_WINDOW);
+
     let doc;
     try {
-      doc = new DOMParser().parseFromString(html, 'text/html');
+      doc = new DOMParser().parseFromString(html.slice(from, to), 'text/html');
     } catch (e) {
       return '';
     }
@@ -511,6 +546,9 @@
 
     return parts.join('\n\n');
   }
+
+  /** How far past the last notes box to keep: far longer than any notes run. */
+  const NOTES_WINDOW = 120000;
 
   /** Builds the export straight from UKC's own JSON. */
   async function parseCragData(html, sourceUrl) {
@@ -618,8 +656,21 @@
     const cragId = number(src, 'cragId');
     let topos = [];
 
+    /*
+     * A crag whose climbs say they have topos but whose topos could not be
+     * read is not a crag to save: stored with none, it would overwrite the
+     * good copy with a worse one. Said instead, so the read is tried again.
+     */
     if (climbing.some((c) => c.has_topo)) {
-      try { topos = await loadTopos(src, cragId); } catch (e) { topos = []; }
+      let got;
+      try {
+        got = await loadTopos(src, cragId);
+      } catch (e) {
+        got = { error: 'topos: ' + String(e).slice(0, 80) };
+      }
+      if (got.throttled) return { topoFailed: 'throttled' };
+      if (got.error) return { topoFailed: got.error };
+      topos = got.topos;
     }
 
     return {
@@ -652,32 +703,49 @@
     const source = topo.image || topo.thumb;
     if (!source) return false;
 
-    return Android.fetchTopoImage(String(topo.topo_id), String(source));
+    return Android.fetchTopoImage(TOKEN, String(topo.topo_id), String(source));
   }
 
+  /** One request, but no more allowed to hang than a page is. */
+  const TOPO_TIMEOUT_MS = 15000;
+
+  /** {topos}, or {throttled} / {error} when they could not be read. */
   async function loadTopos(html, cragId) {
     const auth = scalar(html, 'auth');
-    if (!auth || !cragId) return [];
+    if (!auth || !cragId) return { error: 'topos: no token on the page' };
 
     const body = new URLSearchParams();
     body.set('id', String(cragId));
     body.set('auth', auth);
 
-    const response = await fetch(ORIGIN + '/logbook/crag_topo.php', {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-Requested-With': 'XMLHttpRequest',
-      },
-      body,
-    });
+    const control = new AbortController();
+    const guard = setTimeout(() => control.abort(), TOPO_TIMEOUT_MS);
 
-    if (!response.ok) return [];
+    let response, markup;
+    try {
+      response = await fetch(ORIGIN + '/logbook/crag_topo.php', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body,
+        signal: control.signal,
+      });
+      markup = await response.text();
+    } catch (e) {
+      return { error: 'topos: ' + String(e).slice(0, 80) };
+    } finally {
+      clearTimeout(guard);
+    }
 
-    const markup = await response.text();
+    if (throttledStatus(response) || isThrottled(markup)) return { throttled: true };
+    if (!response.ok) return { error: 'topos: status ' + response.status };
+
     const all = literal(markup, 'all_topos', '{');
-    if (!all) return [];
+    // Answered, and holding none: an honest empty rather than a failure.
+    if (!all) return { topos: [] };
 
     const order = literal(markup, 'topo_order', '[') || Object.keys(all);
     const seen = new Set();
@@ -706,8 +774,8 @@
       }
 
       // The photo sits behind a signed, expiring URL, so storing the link
-      // would be useless later. Cache the pixels now instead, every time:
-      // whatever is on disk may be older than what UKC now serves.
+      // would be useless later. Hand it over now; the app skips photos it
+      // already holds, unless this is a refresh of the one crag.
       try { cacheTopoImage(topo); } catch (e) { /* keep the lines anyway */ }
 
       topos.push({
@@ -721,7 +789,7 @@
       });
     }
 
-    return topos;
+    return { topos };
   }
 
   /** line_data is sometimes a JSON string rather than an array. */
@@ -762,10 +830,12 @@
       const response = await fetchWithin(url, timeoutMs);
       const html = await response.text();
 
-      if (isThrottled(html)) return { throttled: true };
+      if (throttledStatus(response) || isThrottled(html)) return { throttled: true };
 
       const quick = await parseCragData(html, url);
       if (quick === EMPTY) return { empty: true };
+      if (quick && quick.topoFailed === 'throttled') return { throttled: true };
+      if (quick && quick.topoFailed) return { error: quick.topoFailed };
       if (quick) return { crag: quick };
     } catch (e) { /* fall through to a real navigation */ }
 
@@ -776,6 +846,8 @@
 
     const crag = await parseCragData(page.html, url);
     if (crag === EMPTY) return { empty: true };
+    if (crag && crag.topoFailed === 'throttled') return { throttled: true };
+    if (crag && crag.topoFailed) return { error: crag.topoFailed };
     if (crag) return { crag };
 
     // Fall back to the rendered table, in case a page ships no JSON payload.
@@ -951,17 +1023,28 @@
    * The wishlist is a plain page of climb links, so it needs no matching:
    * the hrefs are the same URLs the imported crags carry.
    */
+  /*
+   * A page that is to replace what the app holds has to be the real thing:
+   * answered, not a throttle, and read signed in. A signed-out or refused read
+   * of a wishlist is an empty page, and taking that as "the list is now empty"
+   * is how a flaky connection wiped the reader's lists.
+   */
+  async function signedInPage(url) {
+    const response = await fetch(url, { credentials: 'include' });
+    if (!response.ok || throttledStatus(response)) return null;
+
+    const html = await response.text();
+    if (isThrottled(html) || !userIdIn(html)) return null;
+
+    return new DOMParser().parseFromString(html, 'text/html');
+  }
+
   async function wishlist(userId) {
     if (!userId) return null;
 
     try {
-      const response = await fetch(ORIGIN + '/logbook/showlist.php?id=' + userId, {
-        credentials: 'include',
-      });
-
-      if (!response.ok) return null;
-
-      const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+      const doc = await signedInPage(ORIGIN + '/logbook/showlist.php?id=' + userId);
+      if (!doc) return null;
 
       return [...doc.querySelectorAll('a[href*="/logbook/crags/"]')]
         .map((a) => a.getAttribute('href'))
@@ -976,18 +1059,17 @@
    * Ticklists are pages of climb links, the reader's own and any they
    * subscribe to. Each list costs a request, so this is only run alongside a
    * logbook sync rather than on its own.
+   *
+   * Answers {lists, complete}. Complete means every list named on the index
+   * was read, so the app may replace what it holds; otherwise it merges, and
+   * a list whose page failed keeps its last good copy.
    */
   async function ticklists(userId) {
     if (!userId) return null;
 
     try {
-      const index = await fetch(ORIGIN + '/logbook/showticklists.php?id=' + userId, {
-        credentials: 'include',
-      });
-
-      if (!index.ok) return null;
-
-      const doc = new DOMParser().parseFromString(await index.text(), 'text/html');
+      const doc = await signedInPage(ORIGIN + '/logbook/showticklists.php?id=' + userId);
+      if (!doc) return null;
 
       /*
        * The index links each list as set.php?id=N, twice over: once on its
@@ -1014,16 +1096,14 @@
       }
 
       const lists = [];
+      let complete = true;
 
       for (const [url, name] of byUrl) {
         if (!name) continue;
-        if (lists.length >= 40) break;
+        if (lists.length >= 40) { complete = false; break; }
         try {
-          const page = await fetch(url, { credentials: 'include' });
-          if (!page.ok) continue;
-
-          const listDoc = new DOMParser()
-            .parseFromString(await page.text(), 'text/html');
+          const listDoc = await signedInPage(url);
+          if (!listDoc) { complete = false; await sleep(250); continue; }
 
           const climbs = [...new Set(
             [...listDoc.querySelectorAll('a[href*="/logbook/crags/"]')]
@@ -1033,15 +1113,27 @@
           )];
 
           if (climbs.length) lists.push({ name, url, climbs });
-        } catch (e) { /* skip the list, keep the rest */ }
+        } catch (e) {
+          // Skip the list, keep the rest — and keep the app's copy of it.
+          complete = false;
+        }
 
         await sleep(250);
       }
 
-      return lists;
+      return { lists, complete };
     } catch (e) {
       return null;
     }
+  }
+
+  /** The wishlist and ticklists, each handed over only when read cleanly. */
+  async function listsToo(userId) {
+    const wanted = await wishlist(userId);
+    if (wanted) Android.saveWishlist(TOKEN, JSON.stringify(wanted));
+
+    const lists = await ticklists(userId);
+    if (lists) Android.saveLists(TOKEN, JSON.stringify(lists.lists), lists.complete);
   }
 
   window.__ukcSyncTicks = async function (cragUrl, knownUserId) {
@@ -1052,15 +1144,9 @@
       const rows = await logbookCsv();
 
       if (rows) {
-        Android.saveTickNames(JSON.stringify(rows));
-
-        const wanted = await wishlist(userId);
-        if (wanted) Android.saveWishlist(JSON.stringify(wanted));
-
-        const lists = await ticklists(userId);
-        if (lists) Android.saveLists(JSON.stringify(lists));
-
-        Android.ticksDone(rows.length);
+        Android.saveTickNames(TOKEN, JSON.stringify(rows));
+        await listsToo(userId);
+        Android.ticksDone(TOKEN, rows.length);
         return;
       }
 
@@ -1073,15 +1159,10 @@
       if (!userId) { Android.ticksFailed('signed out'); return; }
 
       const urls = await logbookPages(userId);
+      await listsToo(userId);
 
-      const wanted = await wishlist(userId);
-      if (wanted) Android.saveWishlist(JSON.stringify(wanted));
-
-      const lists = await ticklists(userId);
-      if (lists) Android.saveLists(JSON.stringify(lists));
-
-      Android.saveTicks(JSON.stringify(urls));
-      Android.ticksDone(urls.length);
+      Android.saveTicks(TOKEN, JSON.stringify(urls));
+      Android.ticksDone(TOKEN, urls.length);
     } catch (e) {
       Android.ticksFailed(String(e).slice(0, 120));
     }
@@ -1137,7 +1218,10 @@
       });
 
       const markup = await response.text();
-      if (isThrottled(markup)) return { throttled: true };
+      // Not 403 here: the photo POSTs answer a wrong token with one.
+      if (response.status === 429 || response.status === 503 || isThrottled(markup)) {
+        return { throttled: true };
+      }
       if (!response.ok) return { error: 'status ' + response.status };
       return { photos: photosIn(markup) };
     } finally {
@@ -1149,7 +1233,7 @@
   async function photosOf(pageUrl, endpoint, idName, knownId) {
     const response = await fetchWithin(pageUrl, 15000);
     const html = await response.text();
-    if (isThrottled(html)) return { throttled: true };
+    if (throttledStatus(response) || isThrottled(html)) return { throttled: true };
 
     const auth = scalar(html, 'auth');
     const id = knownId || number(html, idName);
@@ -1207,8 +1291,8 @@
       if (withCrag) {
         const photos = await read(cragUrl, '/logbook/crag_photos.php', 'cragId', 0);
         if (photos) {
-          for (const p of photos) Android.photo(0, p.id, p.url, p.caption);
-          Android.photosClimbDone(0);
+          for (const p of photos) Android.photo(TOKEN, 0, p.id, p.url, p.caption);
+          Android.photosClimbDone(TOKEN, 0);
         }
         await jitter(spacing);
       }
@@ -1222,8 +1306,8 @@
           const photos = await read(climb.url, '/logbook/c_photos.php', 'id', climb.id);
 
           if (photos) {
-            for (const p of photos) Android.photo(climb.id, p.id, p.url, p.caption);
-            Android.photosClimbDone(climb.id);
+            for (const p of photos) Android.photo(TOKEN, climb.id, p.id, p.url, p.caption);
+            Android.photosClimbDone(TOKEN, climb.id);
           }
 
           done++;
@@ -1239,7 +1323,7 @@
       pool.push(worker());
       await Promise.all(pool);
 
-      Android.photosFinished();
+      Android.photosFinished(TOKEN);
     } catch (e) {
       Android.photosFailed(String(e).slice(0, 120));
     }
@@ -1248,12 +1332,32 @@
   /** Internals, so the import can be exercised over adb without saving anything. */
   window.__ukcDebug = { parseCragData, loadCrag, navigate, resultRows };
 
-  /** Runs a list of {name, url} crags through the worker pool. */
-  async function importAll(crags, skipped, delayMs, workers) {
-    if (!crags.length) { Android.finished(skipped, 0); return; }
+
+  /** Tries per crag, whether refused or failing. */
+  const ATTEMPTS = 3;
+
+  /**
+   * Crags in a row that may fail before the run is called off. With no signal
+   * every read fails in a second, and a batch that ploughed on would spend
+   * each queued crag's retries in moments. Stopping leaves the rest unread and
+   * still queued, and the app, seeing nothing read, leaves the failures be too.
+   */
+  const FAIL_STREAK = 6;
+
+  /**
+   * Runs a list of {name, url} crags through the worker pool.
+   *
+   * [startMs] is where the spacing was when the last batch ended. The drain
+   * reads forty crags a batch, and letting each batch start again at the floor
+   * threw away the backoff UKC had just asked for.
+   */
+  async function importAll(crags, delayMs, workers, startMs) {
+    if (!crags.length) { Android.finished(TOKEN, 0, 0); return; }
 
     let next = 0, ok = 0, bad = 0, done = 0, empty = 0;
-    let spacing = delayMs;
+    let spacing = Math.min(8000, Math.max(delayMs, startMs || delayMs));
+    let reported = spacing;
+    let streak = 0;
     let stop = false;
 
     // When one worker is refused, every worker waits: six of them discovering
@@ -1265,8 +1369,24 @@
         await sleep(Math.min(750, Math.max(50, holdUntil - Date.now())));
 
         // Keep the count alive so a long hold does not read as a dead import.
-        Android.progress(done + skipped, crags.length + skipped, crag.name);
+        Android.progress(done, crags.length, crag.name);
       }
+    }
+
+    /** Tells the app where the spacing has eased to, so it can carry it on. */
+    function reportSpacing() {
+      if (Math.abs(spacing - reported) < 1) return;
+      reported = spacing;
+      if (typeof Android.spacing === 'function') Android.spacing(Math.round(spacing));
+    }
+
+    function failed(crag, reason) {
+      bad++;
+      Android.cragFailed(TOKEN, crag.name, crag.url, reason);
+
+      // A run of failures with nothing in between is the connection, not the
+      // crags. Stop before the rest of the list is spent on it.
+      if (++streak >= FAIL_STREAK) stop = true;
     }
 
     async function worker() {
@@ -1279,10 +1399,11 @@
 
         const crag = crags[i];
         let attempt = 0;
+        let settled = false;
 
         await waitOutAnyHold(crag);
 
-        while (attempt < 3 && !stop) {
+        while (attempt < ATTEMPTS && !stop) {
           try {
             // Even with both routes guarded, nothing may settle — parsing a
             // huge page, a wedged iframe. A crag is worth a few seconds, not a
@@ -1300,6 +1421,7 @@
               // pool that all resumes on the same tick just gets refused again.
               attempt++;
               spacing = Math.min(spacing * 2, 8000);
+              reported = spacing;
               holdUntil = Math.max(
                 holdUntil,
                 Date.now() + Math.round(spacing * (2 + Math.random() * 2)),
@@ -1309,39 +1431,56 @@
               continue;
             }
 
+            settled = true;
+
             if (result.empty) {
               // Nothing to store, but nothing went wrong either: a crag whose
               // only entries are summits is a trig point, not climbing.
               empty++;
+              streak = 0;
+              if (typeof Android.cragEmpty === 'function') Android.cragEmpty(TOKEN, crag.url);
               break;
             }
 
             if (result.crag) {
-              Android.saveCrag(JSON.stringify(result.crag));
-              ok++;
+              // The app says whether it could keep it. A crag that could not
+              // be written is a failure, not a read — counted as one, so it
+              // is tried again rather than struck off.
+              if (Android.saveCrag(TOKEN, JSON.stringify(result.crag)) === false) {
+                failed(crag, 'could not be stored');
+              } else {
+                ok++;
+                streak = 0;
+              }
 
               // One slow patch should not hold the rest of the run at 8s.
               spacing = Math.max(delayMs, spacing * 0.85);
+              reportSpacing();
             } else {
+              // A page came back, so the connection is fine: no streak.
               bad++;
               Android.cragFailed(
-                crag.name, crag.url, 'no climbs table — ' + (result.note || '')
+                TOKEN, crag.name, crag.url, 'no climbs table — ' + (result.note || '')
               );
             }
             break;
           } catch (e) {
             attempt++;
-            if (attempt >= 3) {
-              bad++;
-              Android.cragFailed(crag.name, crag.url, String(e).slice(0, 120));
+            if (attempt >= ATTEMPTS) {
+              settled = true;
+              failed(crag, String(e).slice(0, 120));
               break;
             }
             await jitter(spacing * attempt * 1.5);
           }
         }
 
+        // Refused every time: said, so the app puts it back rather than losing
+        // it when the batch is struck off.
+        if (!settled && !stop) failed(crag, 'throttled');
+
         done++;
-        Android.progress(done + skipped, crags.length + skipped, crag.name);
+        Android.progress(done, crags.length, crag.name);
 
         await jitter(Math.max(mine, spacing));
         await breather(spacing);
@@ -1355,7 +1494,7 @@
       // a progress dialog for ever. One dead worker costs its share of the
       // list, not the import.
       pool.push(worker().catch((e) => {
-        Android.cragFailed('worker ' + w, '', String(e).slice(0, 120));
+        Android.cragFailed(TOKEN, 'worker ' + w, '', String(e).slice(0, 120));
       }));
 
       // Staggered, and unevenly: starting six workers together means six
@@ -1369,7 +1508,9 @@
     // every host would have to grow a parameter for at the same moment.
     if (empty && typeof Android.emptyCrags === 'function') Android.emptyCrags(empty);
 
-    Android.finished(ok + skipped, bad);
+    // A run cut short leaves the crags it never reached unmentioned, so the
+    // app keeps them queued; the failures say the rest.
+    Android.finished(TOKEN, ok, bad);
   }
 
   /**
@@ -1384,25 +1525,16 @@
     );
   };
 
-  window.__ukcImportResults = function (delayMs, workers, skipExisting) {
-    const all = resultRows();
-    if (!all.length) { Android.failed('no results on this page'); return; }
-
-    // Empty crags have nothing to fetch; already-imported ones make re-runs cheap.
-    const crags = all
-      .filter((c) => c.routes !== 0)
-      .filter((c) => !skipExisting || !Android.hasCrag(cragIdOf(c.url)));
-
-    return importAll(crags, all.length - crags.length, delayMs, workers);
-  };
-
-  /** Re-reads crags already on the device, so stored data can be brought up to date. */
-  window.__ukcRefreshCrags = function (json, delayMs, workers) {
+  /**
+   * Re-reads crags already on the device, so stored data can be brought up to
+   * date. [startMs] carries the spacing over from the batch before.
+   */
+  window.__ukcRefreshCrags = function (json, delayMs, workers, startMs) {
     let crags = [];
     try { crags = JSON.parse(json); } catch (e) { crags = []; }
 
     if (!crags.length) { Android.failed('nothing to refresh'); return; }
 
-    return importAll(crags, 0, delayMs, workers);
+    return importAll(crags, delayMs, workers, startMs);
   };
 })();

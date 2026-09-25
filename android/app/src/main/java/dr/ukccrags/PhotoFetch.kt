@@ -64,9 +64,8 @@ object PhotoFetch {
         if (running()) return
 
         val app = host.context.applicationContext
-        val script = runCatching {
-            app.assets.open("extract.js").bufferedReader().use { it.readText() }
-        }.getOrNull() ?: return
+        val token = PageScript.newToken()
+        val script = PageScript.load(app, token, watchKind = false) ?: return
 
         val done = PhotoCache.done(app, crag.id)
         var climbs = if (withClimbs) unread(app, crag) else emptyList()
@@ -109,12 +108,20 @@ object PhotoFetch {
 
         val bridge = object {
             @JavascriptInterface
-            fun photo(climbId: Long, photoId: String, url: String, caption: String) {
+            fun photo(key: String, climbId: Long, photoId: String, url: String, caption: String) {
+                if (!PageScript.matches(token, key)) return
+                // The picture is fetched with the session's cookies, so only
+                // from UKC's own hosts; photo ids name files, so digits only.
+                if (!PageScript.isImageUrl(url) || photoId.isEmpty() || !photoId.all { it.isDigit() }) {
+                    AppLog.add(app, "photos: refused a photo link")
+                    return
+                }
                 PhotoCache.record(app, crag.id, climbId, photoId, caption, url)
             }
 
             @JavascriptInterface
-            fun photosClimbDone(climbId: Long) {
+            fun photosClimbDone(key: String, climbId: Long) {
+                if (!PageScript.matches(token, key)) return
                 PhotoCache.markDone(app, crag.id, climbId)
             }
 
@@ -130,8 +137,14 @@ object PhotoFetch {
             fun photosStopped(): Boolean = stopped
 
             @JavascriptInterface
-            fun photosFinished() {
-                handler.post { whenDownloaded(app, crag, before, climbs.size) }
+            fun photosFinished(key: String) {
+                if (!PageScript.matches(token, key)) return
+                handler.post {
+                    // The lists are in, so silence from here is the downloads,
+                    // not a page gone quiet: the watchdog has done its job.
+                    handler.removeCallbacks(quiet)
+                    whenDownloaded(app, crag, before, climbs.size)
+                }
             }
 
             @JavascriptInterface
@@ -144,10 +157,6 @@ object PhotoFetch {
                 AppLog.add(app, "photos: UKC pushed back, spacing now ${spacingMs}ms")
                 handler.post { heard() }
             }
-
-            // Called by the page's own watcher; nothing here has a screen.
-            @JavascriptInterface
-            fun kind(json: String) = Unit
         }
 
         CookieManager.getInstance().setAcceptCookie(true)
@@ -174,22 +183,30 @@ object PhotoFetch {
                 handler.post { end(app, crag, before, "could not open UKC — ${error?.description}") }
             }
 
+            /** Once, and not into a Cloudflare challenge: it gives way to the real page. */
             override fun onPageFinished(page: WebView?, url: String?) {
                 if (ready) return
-                ready = true
 
-                heard()
-                view.evaluateJavascript(script) {
-                    view.evaluateJavascript(
-                        "window.__ukcSavePhotos(${JSONObject.quote(crag.sourceUrl)}, $withCrag, " +
-                            "${JSONObject.quote(asked.toString())}, $DELAY_MS)",
-                        null,
-                    )
+                view.evaluateJavascript(PageScript.CHALLENGE_CHECK) { challenge ->
+                    if (ready || challenge == "true" || web !== view) return@evaluateJavascript
+                    ready = true
+
+                    heard()
+                    view.evaluateJavascript(script) {
+                        view.evaluateJavascript(
+                            "window.__ukcSavePhotos(${JSONObject.quote(crag.sourceUrl)}, $withCrag, " +
+                                "${JSONObject.quote(asked.toString())}, $DELAY_MS)",
+                            null,
+                        )
+                    }
                 }
             }
         }
 
         listener.progress(0, climbs.size, 0)
+
+        // A challenge that never clears is as stuck as a page that stops talking.
+        heard()
         view.loadUrl(app.getString(R.string.crag_index_url))
     }
 

@@ -26,7 +26,24 @@ object ImportProgress {
     private const val CHANNEL = "import"
     private const val ID = 4201
 
+    /**
+     * Android drops a noisy app's updates past about five a second, and a
+     * throttle hold reports eight — so the shade stalled on an old count just
+     * when it mattered. Once a second is plenty for a glance; [done] and
+     * [clear] always go through.
+     */
+    private const val EVERY_MS = 1000L
+
+    @Volatile
+    private var lastShown = 0L
+
     fun show(context: Context, title: String, detail: String, done: Int, total: Int) {
+        val now = android.os.SystemClock.uptimeMillis()
+        synchronized(this) {
+            if (now - lastShown < EVERY_MS) return
+            lastShown = now
+        }
+
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()) return
 
@@ -62,6 +79,9 @@ object ImportProgress {
      * swiped away, for a reader who walked off and left it to it.
      */
     fun done(context: Context, title: String, detail: String) {
+        // A count still on its way from the page must not land on top of this.
+        synchronized(this) { lastShown = android.os.SystemClock.uptimeMillis() }
+
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()) return
 
@@ -87,6 +107,7 @@ object ImportProgress {
     }
 
     fun clear(context: Context) {
+        synchronized(this) { lastShown = android.os.SystemClock.uptimeMillis() }
         runCatching { NotificationManagerCompat.from(context).cancel(ID) }
     }
 

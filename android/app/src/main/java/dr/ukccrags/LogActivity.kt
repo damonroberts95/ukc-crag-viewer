@@ -27,9 +27,38 @@ class LogActivity : AppCompatActivity() {
     private val refresh = android.os.Handler(android.os.Looper.getMainLooper())
     private val again = object : Runnable {
         override fun run() {
-            draw(follow = true)
+            reload()
             refresh.postDelayed(this, REFRESH_MS)
         }
+    }
+
+    /** What the file looked like when last read; see [AppLog.version]. */
+    @Volatile
+    private var seen: Pair<Long, Long>? = null
+
+    /** One read at a time, so a slow disk cannot pile them up. */
+    @Volatile
+    private var reading = false
+
+    /**
+     * Reads the log off the main thread, and only when it has changed: a
+     * quarter of a megabyte read every second and a half on the UI thread was
+     * what made scrolling this screen judder during an import.
+     */
+    private fun reload(force: Boolean = false) {
+        if (reading) return
+        reading = true
+
+        Thread {
+            val version = AppLog.version(this)
+            val text = if (force || version != seen) AppLog.read(this) else null
+            if (text != null) seen = version
+
+            runOnUiThread {
+                reading = false
+                if (text != null && !isDestroyed) draw(text, follow = true)
+            }
+        }.start()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,7 +73,7 @@ class LogActivity : AppCompatActivity() {
         supportActionBar?.title = getString(R.string.debug_log)
         binding.toolbar.setNavigationOnClickListener { finish() }
 
-        draw(follow = true)
+        reload(force = true)
     }
 
     override fun onResume() {
@@ -57,8 +86,8 @@ class LogActivity : AppCompatActivity() {
         super.onPause()
     }
 
-    private fun draw(follow: Boolean) {
-        val text = AppLog.read(this).ifBlank { getString(R.string.log_empty) }
+    private fun draw(raw: String, follow: Boolean) {
+        val text = raw.ifBlank { getString(R.string.log_empty) }
 
         // Setting the same text again is what threw the view back to the top
         // every second and a half. Nothing new, nothing touched.
@@ -101,7 +130,7 @@ class LogActivity : AppCompatActivity() {
             }
             CLEAR -> {
                 AppLog.clear(this)
-                draw(follow = true)
+                reload(force = true)
                 return true
             }
         }
