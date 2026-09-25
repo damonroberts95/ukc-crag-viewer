@@ -52,6 +52,8 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:inputType="none"
+                android:singleLine="true"
+                android:ellipsize="end"
                 android:textSize="14sp" />
 
         </com.google.android.material.textfield.TextInputLayout>
@@ -59,6 +61,8 @@
         <!-- Grades are a set, not a choice, so this opens a list of tick boxes. -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/gradeBox"
+            android:maxLines="1"
+            android:ellipsize="end"
             style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
