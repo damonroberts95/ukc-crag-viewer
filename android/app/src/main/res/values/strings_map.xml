@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The map screen's own strings, kept apart from strings.xml so the map can
+     change without touching the rest of the app's text. -->
+<resources>
+    <string name="map_need_location">Location permission is needed to show where you are</string>
+    <string name="map_locating">Finding your location…</string>
+    <string name="map_search_offline">Place names need signal — only your crags were searched.</string>
+
+    <string name="walk_from_parking">%1$s away — walking in from the parking instead</string>
+    <string name="from_parking">, from the parking</string>
+    <string name="walk_from_crag_no_parking">%1$s away and UKC gives no parking — routing from the crag pin instead</string>
+    <string name="walk_far_no_parking">%1$s away — too far to walk, and UKC gives no parking to walk in from</string>
+    <string name="walk_no_crag_pin">UKC gives no position for this crag to walk to</string>
+</resources>

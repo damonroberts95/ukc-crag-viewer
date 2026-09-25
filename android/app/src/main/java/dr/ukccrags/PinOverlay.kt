@@ -3,6 +3,7 @@ package dr.ukccrags
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Point
 import android.graphics.RectF
 import android.view.MotionEvent
 import org.osmdroid.util.GeoPoint
@@ -12,7 +13,7 @@ import org.osmdroid.views.overlay.Overlay
 /** Whether a pin stands for a whole crag, one buttress of one, or its parking. */
 enum class PinKind { CRAG, BUTTRESS, PARKING }
 
-/** Something to put on the map: a crag, or one of its buttresses. */
+/** Something to put on the map: a crag, one of its buttresses, or its parking. */
 data class Pin(
     val label: String,
     val latitude: Double,
@@ -23,6 +24,8 @@ data class Pin(
     val crag: String = "",
     /** True when the position is the parent crag's, not the thing's own. */
     val approximate: Boolean = false,
+    /** A crag's type as a letter, so the pin does not rest on colour alone. */
+    val glyph: String = "",
     val payload: Any? = null,
 )
 
@@ -38,33 +41,34 @@ data class Pin(
  * cell boundaries moved with the finger, so pins kept merging and splitting.
  * Cells are cut in Mercator world pixels at the current whole zoom instead, so
  * a pan changes nothing and only crossing a zoom level regroups anything.
+ *
+ * Car parks share the layer but not the rules. On a layer of their own they
+ * sat under the crags' hit test, and a park within a thumb's width of its crag
+ * could never be tapped; here one hit test picks whichever is nearest. They are
+ * never grouped — two parks a hundred metres apart are two choices, and a
+ * bubble with a 2 in it hides exactly the thing being chosen between — nor
+ * named, since a park named after its crag doubles every name on screen, and
+ * they are drawn first so the crags sit on top.
  */
 class PinOverlay(
     private val onPin: (Pin) -> Unit,
     private val onCluster: (GeoPoint, List<Pin>) -> Unit,
-    /**
-     * Off for car parks. Two parks a hundred metres apart are two choices, and
-     * a bubble with a 2 in it hides exactly the thing being chosen between.
-     */
-    private val grouped: Boolean = true,
-    /**
-     * Off for car parks too: a park named after its crag doubles every crag
-     * name on screen. Tapping one still says which crag it serves.
-     */
-    private val named: Boolean = true,
+    /** The letter in a crag's disc. Dark where night mode makes the discs pale. */
+    private val glyphColour: Int = Color.WHITE,
 ) : Overlay() {
 
     var pins: List<Pin> = emptyList()
         set(value) {
             field = value
-            drawn = emptyList()
+            hitCount = 0
             groupedZoom = -1
         }
 
     /**
      * One drawn thing: a lone pin, or several stacked into a bubble. Held in
      * world pixels as well as degrees so a pan can cull it with arithmetic
-     * rather than a projection.
+     * rather than a projection, and with everything a frame needs to draw it
+     * already decided, since a frame is the wrong place to be deciding it.
      */
     private class Group(
         val pins: List<Pin>,
@@ -72,17 +76,47 @@ class PinOverlay(
         val worldY: Double,
         val latitude: Double,
         val longitude: Double,
-    )
+        val shape: PinKind,
+        val colour: Int,
+        val alpha: Int,
+        /** Written inside: a crag's letter, P, or a bubble's count. */
+        val mark: String,
+        val markColour: Int,
+        /** Written beside when there is room; null when it never should be. */
+        val name: String?,
+        val nameWidth: Float,
+    ) {
+        val lone: Boolean get() = pins.size == 1
+    }
 
     /** Grouping only changes with the zoom, so it is kept until one changes. */
     private var groups: List<Group> = emptyList()
     private var groupedZoom = -1
+    private var groupedDensity = 0f
 
-    /** Reused rather than allocated per pin per frame. */
+    // Reused rather than allocated per pin per frame.
     private val scratch = GeoPoint(0.0, 0.0)
+    private val point = Point()
+    private val screen = Point()
+    private val box = RectF()
 
-    /** Where each pin or bubble ended up, for hit testing the last frame. */
-    private var drawn: List<Triple<Float, Float, Any>> = emptyList()
+    /** Where each pin or bubble ended up last frame, for hit testing. */
+    private var hitX = FloatArray(0)
+    private var hitY = FloatArray(0)
+    private var hitGroup = arrayOfNulls<Group>(0)
+    private var hitCount = 0
+
+    /** Names waiting for a place: the group, its canvas and its screen position. */
+    private var nameGroup = arrayOfNulls<Group>(0)
+    private var nameX = FloatArray(0)
+    private var nameY = FloatArray(0)
+    private var nameScreenX = FloatArray(0)
+    private var nameScreenY = FloatArray(0)
+    private var nameCount = 0
+
+    /** Screen rects, four floats each, that a name must not overlap. */
+    private var blocked = FloatArray(0)
+    private var blockedCount = 0
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -109,18 +143,18 @@ class PinOverlay(
 
         val density = map.resources.displayMetrics.density
         val radius = 9f * density
+        val bubble = radius * 1.7f
         val cell = CELL_DP * density
 
         text.textSize = 11f * density
         label.textSize = 12f * density
 
         val projection = map.projection
-        val point = android.graphics.Point()
 
         // MapView draws its contents turned by minus this, so anything that has
         // to stay readable is drawn back the other way about its own anchor.
         // Pins are round and do not care; text does.
-        val upright = map.mapOrientation
+        val orientation = map.mapOrientation
 
         // World pixels at this zoom: the frame the cells are cut in.
         val zoom = map.zoomLevelDouble.toInt()
@@ -129,188 +163,216 @@ class PinOverlay(
         // Grouping is anchored to the world, so panning cannot change it. It is
         // recut only when the zoom or the pins do, which takes the work out of
         // the frame the finger is dragging.
-        if (zoom != groupedZoom) {
+        if (zoom != groupedZoom || density != groupedDensity) {
             groups = groupPins(cell.toDouble(), worldSize)
             groupedZoom = zoom
+            groupedDensity = density
         }
 
         // What is on screen, in the same world pixels, so a group is culled by
-        // arithmetic instead of a projection each.
-        val topLeft = projection.fromPixels(0, 0)
-        val bottomRight = projection.fromPixels(map.width, map.height)
-
-        val (leftWorld, topWorld) = worldPixels(
-            topLeft.latitude, topLeft.longitude, worldSize,
-        )
-        val (rightWorld, bottomWorld) = worldPixels(
-            bottomRight.latitude, bottomRight.longitude, worldSize,
-        )
-
+        // arithmetic instead of a projection each. The projection's own box,
+        // not the screen's corners: turned, the screen's corners are no longer
+        // its extremes, and pins near the rotated corners went undrawn.
+        val view = projection.boundingBox
         val margin = cell * 3.0
-        val visible = groups.filter {
-            it.worldX >= leftWorld - margin && it.worldX <= rightWorld + margin &&
-                it.worldY >= topWorld - margin && it.worldY <= bottomWorld + margin
-        }
+        val left = worldX(view.lonWest, worldSize) - margin
+        val right = worldX(view.lonEast, worldSize) + margin
+        val top = worldY(view.latNorth, worldSize) - margin
+        val bottom = worldY(view.latSouth, worldSize) + margin
 
-        val hits = mutableListOf<Triple<Float, Float, Any>>()
+        makeRoom(groups.size)
+        hitCount = 0
+        nameCount = 0
+        blockedCount = 0
 
-        /** Positions with the text to write beside them. */
-        val labelled = mutableListOf<Triple<Float, Float, String>>()
+        for (group in groups) {
+            if (group.worldX < left || group.worldX > right ||
+                group.worldY < top || group.worldY > bottom
+            ) continue
 
-        /** Where a label must not go: every pin and bubble already drawn. */
-        val obstacles = mutableListOf<RectF>()
-
-        for (entry in visible) {
-            val group = entry.pins
-
-            scratch.latitude = entry.latitude
-            scratch.longitude = entry.longitude
+            scratch.setCoords(group.latitude, group.longitude)
             projection.toPixels(scratch, point)
 
             val x = point.x.toFloat()
             val y = point.y.toFloat()
+            val size = if (group.lone) radius else bubble
 
-            if (group.size == 1) {
-                val pin = group.first()
+            fill.color = group.colour
+            fill.alpha = group.alpha
 
-                fill.color = pin.colour
-                fill.alpha = if (pin.approximate) 150 else 255
-
-                // A crag is a disc, a buttress a smaller diamond, parking a
-                // road-sign square with a P: shape carries the difference even
-                // where the colours are hard to tell apart.
-                when (pin.kind) {
-                    PinKind.CRAG -> {
-                        canvas.drawCircle(x, y, radius, fill)
-                        canvas.drawCircle(x, y, radius, edge)
-                    }
-                    PinKind.BUTTRESS -> {
-                        drawDiamond(canvas, x, y, radius * 0.85f, fill)
-                        drawDiamond(canvas, x, y, radius * 0.85f, edge)
-                    }
-                    PinKind.PARKING -> {
-                        drawSquare(canvas, x, y, radius * 0.9f, fill)
-                        drawSquare(canvas, x, y, radius * 0.9f, edge)
-                        canvas.withUpright(upright, x, y) {
-                            drawText("P", x, y + text.textSize / 3f, text)
-                        }
-                    }
+            // A crag is a disc, a buttress a smaller diamond, parking a
+            // road-sign square with a P: shape carries the difference even
+            // where the colours are hard to tell apart.
+            when {
+                group.shape == PinKind.PARKING -> {
+                    drawSquare(canvas, x, y, size * 0.9f, fill)
+                    drawSquare(canvas, x, y, size * 0.9f, edge)
                 }
-
-                hits.add(Triple(x, y, pin))
-                if (named) labelled.add(Triple(x, y, pin.label))
-                obstacles.add(RectF(x - radius, y - radius, x + radius, y + radius))
-                continue
+                group.shape == PinKind.BUTTRESS -> {
+                    val corner = if (group.lone) size * 0.85f else size * 1.15f
+                    drawDiamond(canvas, x, y, corner, fill)
+                    drawDiamond(canvas, x, y, corner, edge)
+                }
+                else -> {
+                    canvas.drawCircle(x, y, size, fill)
+                    canvas.drawCircle(x, y, size, edge)
+                }
             }
 
-            // The bubble sits at the group's own centre, not the cell's.
-            val bubble = radius * 1.7f
-
-            fill.color = CLUSTER
-            fill.alpha = 235
-
-            // Same shape language as a single pin: buttresses are diamonds
-            // however many of them are stacked up.
-            val buttresses = group.all { it.kind == PinKind.BUTTRESS }
-            val parking = group.all { it.kind == PinKind.PARKING }
-
-            if (buttresses) {
-                drawDiamond(canvas, x, y, bubble * 1.15f, fill)
-                drawDiamond(canvas, x, y, bubble * 1.15f, edge)
-            } else if (parking) {
-                fill.color = group.first().colour
-                drawSquare(canvas, x, y, bubble, fill)
-                drawSquare(canvas, x, y, bubble, edge)
-            } else {
-                canvas.drawCircle(x, y, bubble, fill)
-                canvas.drawCircle(x, y, bubble, edge)
+            if (group.mark.isNotEmpty()) {
+                text.color = group.markColour
+                canvas.withUpright(orientation, x, y) {
+                    drawText(group.mark, x, y + text.textSize / 3f, text)
+                }
             }
 
-            canvas.withUpright(upright, x, y) {
-                drawText(group.size.toString(), x, y + text.textSize / 3f, text)
-            }
-
-            // The group travels with the bubble: some pins share a position
+            // The group travels with the hit: some pins share a position
             // exactly — a buttress with no pin of its own sits on the crag's —
             // and no amount of zoom will ever separate those.
-            hits.add(Triple(x, y, group.toList()))
-            obstacles.add(RectF(x - bubble, y - bubble, x + bubble, y + bubble))
+            hitX[hitCount] = x
+            hitY[hitCount] = y
+            hitGroup[hitCount] = group
+            hitCount++
 
-            // Buttresses with no published position all pile onto their crag's
-            // pin, and a bare count says nothing about where you are looking.
-            // A group of crags stays a plain count: naming one would mislead.
-            if (named && (buttresses || parking)) {
-                val crag = group.map { it.crag }.distinct().singleOrNull()
-                if (!crag.isNullOrBlank()) labelled.add(Triple(x, y + bubble, crag))
+            // Names are laid out where they will be seen: upright, on the
+            // turned screen. Testing them in the map's own frame and then
+            // turning them passed labels that overlapped once drawn.
+            val screenX: Float
+            val screenY: Float
+            if (orientation == 0f) {
+                screenX = x
+                screenY = y
+            } else {
+                projection.rotateAndScalePoint(point.x, point.y, screen)
+                screenX = screen.x.toFloat()
+                screenY = screen.y.toFloat()
+            }
+
+            block(screenX - size, screenY - size, screenX + size, screenY + size)
+
+            if (group.name != null) {
+                nameGroup[nameCount] = group
+                nameX[nameCount] = x
+                nameY[nameCount] = y
+                nameScreenX[nameCount] = screenX
+                nameScreenY[nameCount] = screenY
+                nameCount++
             }
         }
 
         // Names last, and only when there is room: a screen of overlapping
-        // labels is worse than none. Each one is tried beside its pin, then the
-        // other side, then above and below, and dropped if every placement would
-        // sit on another pin or another name.
-        if (labelled.size <= NAME_LIMIT) {
-            val taken = mutableListOf<RectF>()
+        // labels is worse than none.
+        if (nameCount <= NAME_LIMIT) placeNames(canvas, orientation, radius, bubble)
+    }
 
-            for ((x, y, name) in labelled) {
-                val width = label.measureText(name) + 8f
-                val height = label.textSize + 8f
-                val gap = radius + 4f
+    /**
+     * Each name is tried beside its pin, then the other side, then above and
+     * below, and dropped if every placement would sit on another pin or
+     * another name. A bubble's name hangs from its foot.
+     */
+    private fun placeNames(canvas: Canvas, orientation: Float, radius: Float, bubble: Float) {
+        val height = label.textSize + 8f
+        val gap = radius + 4f
 
-                val places = listOf(
-                    RectF(x + gap, y - height / 2f, x + gap + width, y + height / 2f),
-                    RectF(x - gap - width, y - height / 2f, x - gap, y + height / 2f),
-                    RectF(x - width / 2f, y - gap - height, x + width / 2f, y - gap),
-                    RectF(x - width / 2f, y + gap, x + width / 2f, y + gap + height),
-                )
+        for (i in 0 until nameCount) {
+            val group = nameGroup[i] ?: continue
+            val name = group.name ?: continue
+            val width = group.nameWidth + 8f
+            val drop = if (group.lone) 0f else bubble
 
-                val box = places.firstOrNull { place ->
-                    taken.none { RectF.intersects(it, place) } &&
-                        obstacles.none { RectF.intersects(it, place) }
-                } ?: continue
+            val screenX = nameScreenX[i]
+            val screenY = nameScreenY[i]
 
-                taken.add(box)
+            for (place in 0 until 4) {
+                val offLeft: Float
+                val offTop: Float
+                when (place) {
+                    0 -> { offLeft = gap; offTop = drop - height / 2f }
+                    1 -> { offLeft = -gap - width; offTop = drop - height / 2f }
+                    2 -> { offLeft = -width / 2f; offTop = drop - gap - height }
+                    else -> { offLeft = -width / 2f; offTop = drop + gap }
+                }
 
-                canvas.withUpright(upright, x, y) {
+                val l = screenX + offLeft
+                val t = screenY + offTop
+                if (overlapsBlocked(l, t, l + width, t + height)) continue
+
+                block(l, t, l + width, t + height)
+
+                // The same offset from the pin, drawn upright about it, lands
+                // exactly where it was tested on the turned screen.
+                val x = nameX[i]
+                val y = nameY[i]
+                canvas.withUpright(orientation, x, y) {
+                    box.set(x + offLeft, y + offTop, x + offLeft + width, y + offTop + height)
                     drawRoundRect(box, 6f, 6f, labelBack)
                     drawText(name, box.left + 4f, box.centerY() + label.textSize / 3f, label)
                 }
+                break
             }
         }
-
-        drawn = hits
     }
 
     override fun onSingleTapConfirmed(event: MotionEvent, map: MapView): Boolean {
         val reach = 26f * map.resources.displayMetrics.density
 
-        var best: Any? = null
+        var best: Group? = null
         var bestDistance = reach
 
-        for ((x, y, what) in drawn) {
-            val distance = kotlin.math.hypot(event.x - x, event.y - y)
+        for (i in 0 until hitCount) {
+            val distance = kotlin.math.hypot(event.x - hitX[i], event.y - hitY[i])
             if (distance < bestDistance) {
                 bestDistance = distance
-                best = what
+                best = hitGroup[i]
             }
         }
 
-        return when (val hit = best) {
-            is Pin -> { onPin(hit); true }
+        val hit = best ?: return false
 
-            is List<*> -> {
-                val group = hit.filterIsInstance<Pin>()
-                val centre = GeoPoint(
-                    group.sumOf { it.latitude } / group.size,
-                    group.sumOf { it.longitude } / group.size,
-                )
-
-                onCluster(centre, group)
-                true
-            }
-
-            else -> false
+        if (hit.lone) {
+            onPin(hit.pins.first())
+        } else {
+            onCluster(GeoPoint(hit.latitude, hit.longitude), hit.pins)
         }
+        return true
+    }
+
+    /** Grows the per-frame arrays only when there are more groups than ever before. */
+    private fun makeRoom(size: Int) {
+        if (hitX.size >= size) return
+
+        hitX = FloatArray(size)
+        hitY = FloatArray(size)
+        hitGroup = arrayOfNulls(size)
+        nameGroup = arrayOfNulls(size)
+        nameX = FloatArray(size)
+        nameY = FloatArray(size)
+        nameScreenX = FloatArray(size)
+        nameScreenY = FloatArray(size)
+        // Every pin blocks once and every name may too.
+        blocked = FloatArray(size * 8)
+    }
+
+    private fun block(left: Float, top: Float, right: Float, bottom: Float) {
+        val at = blockedCount * 4
+        if (at + 4 > blocked.size) return
+
+        blocked[at] = left
+        blocked[at + 1] = top
+        blocked[at + 2] = right
+        blocked[at + 3] = bottom
+        blockedCount++
+    }
+
+    /** RectF.intersects, over the flat array. */
+    private fun overlapsBlocked(left: Float, top: Float, right: Float, bottom: Float): Boolean {
+        for (i in 0 until blockedCount) {
+            val at = i * 4
+            if (left < blocked[at + 2] && blocked[at] < right &&
+                top < blocked[at + 3] && blocked[at + 1] < bottom
+            ) return true
+        }
+        return false
     }
 
     /**
@@ -358,60 +420,122 @@ class PinOverlay(
     /**
      * Cuts the pins into cells of [cell] world pixels and averages each cell
      * into one drawn thing. Done once per zoom rather than once per frame.
+     *
+     * Positions sit in arrays beside the pins rather than in a map keyed by
+     * them: a pin's payload can be a whole crag, and hashing one means hashing
+     * every climb in it.
      */
     private fun groupPins(cell: Double, worldSize: Double): List<Group> {
-        if (!grouped) {
-            return pins.map { pin ->
-                val (x, y) = worldPixels(pin.latitude, pin.longitude, worldSize)
-                Group(listOf(pin), x, y, pin.latitude, pin.longitude)
-            }
-        }
+        val result = ArrayList<Group>(pins.size)
 
-        val cells = LinkedHashMap<Long, MutableList<Pin>>()
-        val places = HashMap<Pin, Pair<Double, Double>>(pins.size)
-
+        // Parking first: what is drawn first is drawn underneath.
         for (pin in pins) {
-            val world = worldPixels(pin.latitude, pin.longitude, worldSize)
-            places[pin] = world
+            if (pin.kind != PinKind.PARKING) continue
 
-            val column = (world.first / cell).toLong()
-            val row = (world.second / cell).toLong()
-
-            cells.getOrPut(column * 4_000_000L + row) { mutableListOf() }.add(pin)
-        }
-
-        return cells.values.map { group ->
-            val size = group.size
-
-            Group(
-                pins = group.toList(),
-                worldX = group.sumOf { places.getValue(it).first } / size,
-                worldY = group.sumOf { places.getValue(it).second } / size,
-                latitude = group.sumOf { it.latitude } / size,
-                longitude = group.sumOf { it.longitude } / size,
+            result += Group(
+                pins = listOf(pin),
+                worldX = worldX(pin.longitude, worldSize),
+                worldY = worldY(pin.latitude, worldSize),
+                latitude = pin.latitude,
+                longitude = pin.longitude,
+                shape = PinKind.PARKING,
+                colour = pin.colour,
+                alpha = 255,
+                mark = "P",
+                markColour = Color.WHITE,
+                name = null,
+                nameWidth = 0f,
             )
         }
+
+        val marks = pins.filter { it.kind != PinKind.PARKING }
+        val xs = DoubleArray(marks.size)
+        val ys = DoubleArray(marks.size)
+        val cells = LinkedHashMap<Long, MutableList<Int>>()
+
+        for ((i, pin) in marks.withIndex()) {
+            xs[i] = worldX(pin.longitude, worldSize)
+            ys[i] = worldY(pin.latitude, worldSize)
+
+            val column = (xs[i] / cell).toLong()
+            val row = (ys[i] / cell).toLong()
+
+            cells.getOrPut(column * 4_000_000L + row) { ArrayList(1) }.add(i)
+        }
+
+        for (members in cells.values) {
+            if (members.size == 1) {
+                val i = members[0]
+                val pin = marks[i]
+                val name = pin.label.takeIf { it.isNotBlank() }
+
+                result += Group(
+                    pins = listOf(pin),
+                    worldX = xs[i],
+                    worldY = ys[i],
+                    latitude = pin.latitude,
+                    longitude = pin.longitude,
+                    shape = pin.kind,
+                    colour = pin.colour,
+                    alpha = if (pin.approximate) 150 else 255,
+                    mark = if (pin.kind == PinKind.CRAG) pin.glyph else "",
+                    markColour = glyphColour,
+                    name = name,
+                    nameWidth = name?.let { label.measureText(it) } ?: 0f,
+                )
+                continue
+            }
+
+            val group = members.map { marks[it] }
+            val size = members.size
+
+            // Buttresses with no published position all pile onto their crag's
+            // pin, and a bare count says nothing about where you are looking.
+            // A group of crags stays a plain count: naming one would mislead.
+            val buttresses = group.all { it.kind == PinKind.BUTTRESS }
+            val name = if (buttresses) {
+                group.map { it.crag }.distinct().singleOrNull()?.takeIf { it.isNotBlank() }
+            } else {
+                null
+            }
+
+            result += Group(
+                pins = group,
+                worldX = members.sumOf { xs[it] } / size,
+                worldY = members.sumOf { ys[it] } / size,
+                latitude = group.sumOf { it.latitude } / size,
+                longitude = group.sumOf { it.longitude } / size,
+                // Same shape language as a single pin: buttresses are diamonds
+                // however many of them are stacked up.
+                shape = if (buttresses) PinKind.BUTTRESS else PinKind.CRAG,
+                colour = CLUSTER,
+                alpha = 235,
+                mark = size.toString(),
+                markColour = Color.WHITE,
+                name = name,
+                nameWidth = name?.let { label.measureText(it) } ?: 0f,
+            )
+        }
+
+        return result
     }
 
-    /**
-     * Mercator position in pixels for a whole world of [worldSize] pixels.
+    /*
+     * Mercator position in pixels for a whole world of worldSize pixels.
      * Independent of where the map happens to be scrolled to, which is the
      * whole point.
      */
-    private fun worldPixels(
-        latitude: Double,
-        longitude: Double,
-        worldSize: Double,
-    ): Pair<Double, Double> {
-        val x = (longitude + 180.0) / 360.0 * worldSize
 
+    private fun worldX(longitude: Double, worldSize: Double): Double =
+        (longitude + 180.0) / 360.0 * worldSize
+
+    private fun worldY(latitude: Double, worldSize: Double): Double {
         val clamped = latitude.coerceIn(-85.05112878, 85.05112878)
         val radians = Math.toRadians(clamped)
-        val y = (1.0 - kotlin.math.ln(
+
+        return (1.0 - kotlin.math.ln(
             kotlin.math.tan(radians) + 1.0 / kotlin.math.cos(radians)
         ) / Math.PI) / 2.0 * worldSize
-
-        return x to y
     }
 
     private companion object {
@@ -424,7 +548,7 @@ class PinOverlay(
          */
         const val CELL_DP = 11f
 
-        /** Above this many pins on screen, names are dropped as unreadable. */
+        /** Above this many names on screen, they are dropped as unreadable. */
         const val NAME_LIMIT = 40
     }
 }

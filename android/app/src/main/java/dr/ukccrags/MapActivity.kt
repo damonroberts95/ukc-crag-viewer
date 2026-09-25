@@ -1,12 +1,14 @@
 package dr.ukccrags
 
+import android.content.Context
 import android.content.Intent
-import android.graphics.drawable.ColorDrawable
+import android.content.res.ColorStateList
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
-import android.widget.Toast
+import android.widget.ArrayAdapter
+import android.widget.Filter
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -16,7 +18,6 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dr.ukccrags.databinding.ActivityMapBinding
 import dr.ukccrags.databinding.ItemLegendBinding
 import dr.ukccrags.databinding.SheetPinBinding
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.overlay.Polyline
@@ -36,6 +37,11 @@ private data class ButtressAt(val crag: Crag, val buttress: Buttress)
  * Nothing here assumes the crags are near each other. A library grown from
  * ticklists can be scattered across countries, so the opening view is fitted
  * to whatever is actually stored.
+ *
+ * Every read of the library happens off the main thread. At four thousand
+ * crags the card list alone is a noticeable pause, and a box query under a
+ * moving map is a dropped frame each time; each read carries a generation
+ * number so an answer that arrives after the map has moved on is dropped.
  */
 class MapActivity : AppCompatActivity() {
 
@@ -44,21 +50,42 @@ class MapActivity : AppCompatActivity() {
     private var crags: List<CragCard> = emptyList()
     private var single: Crag? = null
 
+    /** False until the library, or the one crag, has been read. */
+    private var loaded = false
+
     private lateinit var overlay: PinOverlay
+    private lateinit var rotate: RotateGesture
+
+    /** Crag and buttress pins, and every crag's pin for the library view. */
+    private var marks: List<Pin> = emptyList()
+    private var cragPins: List<Pin> = emptyList()
 
     /**
-     * Parking, on a layer of its own beneath the crags. Sharing the crags'
-     * layer would group each crag with its own car park a few hundred metres
-     * off, turning every lone pin into a count bubble at any useful zoom.
+     * Parking shares the crags' layer — so one hit test picks whichever is
+     * nearest — but the overlay draws it beneath them and never groups it.
      */
-    private lateinit var parkingOverlay: PinOverlay
-    private var parkingBuiltFor: BoundingBox? = null
+    private var parking: List<Pin> = emptyList()
     private var showParking = true
+
+    /**
+     * The boxes, margin included, that the pins on screen were asked for. A
+     * rebuild is due once the view leaves one — including by zooming out,
+     * which moves no centre but uncovers every edge.
+     */
+    private var marksAskedFor: Area? = null
+    private var parkingAskedFor: Area? = null
+    private var marksGeneration = 0
+    private var parkingGeneration = 0
 
     private var locator: MyLocationNewOverlay? = null
 
+    /** What to do with the first fix, while one is being waited for. */
+    private var waitingForFix: ((GeoPoint) -> Unit)? = null
+
     /** The walking line currently drawn: a dark casing under a bright core. */
     private var walkLine: List<Polyline> = emptyList()
+    private var walkPoints: List<GeoPoint> = emptyList()
+    private var walkOnPaths = false
 
     /** True while the map is drawn buttress by buttress rather than crag by crag. */
     private var detailed = false
@@ -66,22 +93,25 @@ class MapActivity : AppCompatActivity() {
     /** The opening view is framed once; later rebuilds must not move the map. */
     private var framed = false
 
-    /** Where the pins were last built for, so a small pan can be ignored. */
-    private var builtFor: org.osmdroid.util.BoundingBox? = null
-
     /** The current suggestions, in the order the dropdown lists them. */
     private var found: List<Pair<String, GeoPoint>> = emptyList()
+    private lateinit var suggestions: Suggestions
 
     private var pendingQuery = ""
     private val suggestWhenStill = Runnable { suggest(pendingQuery) }
 
-    /** What each crag mostly holds, and the pin colour that follows from it. */
-    private var pinTypes: Map<String, String> = emptyMap()
-    private var pinColours: Map<String, Int> = emptyMap()
+    /** One colour per climbing type, worked out once rather than per pin. */
+    private val typeColours = HashMap<String, Int>()
+
+    /** What the legend last showed, so an unchanged one is not rebuilt. */
+    private var legendShown: List<String> = emptyList()
 
     private val settle = android.os.Handler(android.os.Looper.getMainLooper())
     private val rebuildWhenStill = Runnable { rebuildNow() }
     private val snapWhenStill = Runnable { snapZoom() }
+
+    /** One hide for the note, so a new message is not cut short by an old timer. */
+    private val hideNote = Runnable { binding.note.visibility = View.GONE }
 
     private val askLocation = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -90,7 +120,7 @@ class MapActivity : AppCompatActivity() {
             startLocating()
             goToMe()
         } else {
-            note(getString(R.string.need_location))
+            note(getString(R.string.map_need_location))
         }
     }
 
@@ -105,45 +135,20 @@ class MapActivity : AppCompatActivity() {
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         binding.toolbar.setNavigationOnClickListener { finish() }
 
-        crags = CragStore.cards(this).filter { it.hasPin }
-
-        // Working out what a crag mostly holds walks all of its climbs. A zoom
-        // used to do that for every crag in the library, twice — once for the
-        // pins and once for the legend — which is what made a pinch stutter.
-        // None of it can change while this screen is open.
-        pinTypes = crags.associate { it.area to it.dominantType }
-        pinColours = pinTypes.mapValues { (_, type) -> pinColour(type) }
-        // One crag is read whole — its buttresses and climbs are the screen —
-        // where the library map only ever needs cards and pins.
-        single = intent.getStringExtra(EXTRA_AREA)?.let { area ->
-            CragStore.byArea(this, area)
-        }
+        val wantedId = intent.getStringExtra(EXTRA_CRAG_ID)
+        val wantedArea = intent.getStringExtra(EXTRA_AREA)
 
         // The bar holds either a crag's name or the search box, not both: one
         // crag's buttresses are not something you search a library for.
-        if (single != null) {
-            supportActionBar?.title = single?.area
+        if (wantedId != null || wantedArea != null) {
+            supportActionBar?.title = wantedArea
             binding.searchBox.visibility = View.GONE
         } else {
             supportActionBar?.title = null
             binding.searchBox.visibility = View.VISIBLE
         }
 
-        binding.map.setTileSource(TileSourceFactory.MAPNIK)
         applySource(MapSources.chosen(this))
-
-        // Out of signal and past what is cached, osmdroid draws a grey grid of
-        // "no tile" squares. The pins, the walking line and the location dot
-        // are the parts that actually navigate, so let them sit on a plain
-        // ground instead of a chessboard.
-        binding.map.overlayManager.tilesOverlay.apply {
-            loadingBackgroundColor = ContextCompat.getColor(
-                this@MapActivity, R.color.map_empty,
-            )
-            loadingLineColor = ContextCompat.getColor(
-                this@MapActivity, R.color.map_empty_line,
-            )
-        }
         binding.map.setMultiTouchControls(true)
 
         // Left alone, a pinch settles on a fractional zoom where every tile is
@@ -159,23 +164,16 @@ class MapActivity : AppCompatActivity() {
         overlay = PinOverlay(
             onPin = { showSheet(it) },
             onCluster = { centre, group -> openCluster(centre, group) },
-        )
-
-        parkingOverlay = PinOverlay(
-            onPin = { showSheet(it) },
-            onCluster = { centre, group -> openCluster(centre, group) },
-            grouped = false,
-            named = false,
+            glyphColour = ContextCompat.getColor(this, R.color.pin_glyph),
         )
         showParking = Settings.showParking(this)
-
-        binding.map.overlays.add(parkingOverlay)
         binding.map.overlays.add(overlay)
 
         // Two fingers turn the map. Stood under a crag, matching the map to
         // what you are looking at beats knowing where north is. Zoom takes
         // precedence: see RotateGesture.
-        binding.map.overlays.add(RotateGesture(binding.map))
+        rotate = RotateGesture(binding.map)
+        binding.map.overlays.add(rotate)
 
         // A turned map needs a way back, and a permanent button for it would be
         // clutter, so the chip appears only once the map is off north.
@@ -185,6 +183,10 @@ class MapActivity : AppCompatActivity() {
             binding.map.mapOrientation = 0f
             binding.map.invalidate()
         }
+
+        // No configChanges, so a rotation or a dark-mode switch rebuilds this
+        // screen; without this it jumped back to the fitted opening view.
+        savedInstanceState?.let { restore(it) }
 
         startLocating()
         binding.here.setOnClickListener { goToMe() }
@@ -208,9 +210,50 @@ class MapActivity : AppCompatActivity() {
             }
         })
 
-        buildPins()
-        buildParking(force = true)
-        buildLegend()
+        load(wantedId, wantedArea)
+    }
+
+    /**
+     * Reads what the map shows. One crag is read whole — its buttresses and
+     * climbs are the screen — and then the library is not needed at all; the
+     * library map only ever needs cards and pins. The id is asked for first,
+     * since two crags can share a name.
+     */
+    private fun load(wantedId: String?, wantedArea: String?) {
+        val buttressColour = ContextCompat.getColor(this, R.color.pin_buttress)
+
+        Thread {
+            val crag = wantedId?.let { CragStore.byId(this, it) }
+                ?: wantedArea?.let { CragStore.byArea(this, it) }
+            val cards = if (crag == null) CragStore.cards(this).filter { it.hasPin } else emptyList()
+
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+
+                single = crag
+                crags = cards
+                cragPins = cards.map { cragPin(it) }
+                loaded = true
+
+                if (crag != null) {
+                    supportActionBar?.title = crag.area
+                    marks = buttressPins(crag, buttressColour)
+                    publish()
+                    frame(marks)
+                    buildParking(force = true)
+                } else {
+                    // The library — also when the one crag asked for has since
+                    // gone, which leaves the bar to the search box after all.
+                    supportActionBar?.title = null
+                    binding.searchBox.visibility = View.VISIBLE
+                    buildPins()
+
+                    // Once laid out, so the view has a box to ask for — and a
+                    // view restored zoomed in gets its buttresses and parking.
+                    binding.map.post { rebuildNow() }
+                }
+            }
+        }.start()
     }
 
     /**
@@ -255,7 +298,10 @@ class MapActivity : AppCompatActivity() {
             .setTitle(title)
             .setItems(labels.toTypedArray()) { _, which -> goToPin(ordered[which]) }
             .setNeutralButton(R.string.zoom_in) { _, _ ->
-                binding.map.controller.animateTo(centre, binding.map.zoomLevelDouble + 2.0, 400L)
+                // Whole levels only: a fraction here is animated to, then
+                // animated again by the snap.
+                val zoom = Math.round(binding.map.zoomLevelDouble) + 2.0
+                binding.map.controller.animateTo(centre, zoom, 400L)
             }
             .show()
     }
@@ -263,7 +309,7 @@ class MapActivity : AppCompatActivity() {
     /** Centres on one pin and opens it, since a shared position cannot be zoomed apart. */
     private fun goToPin(pin: Pin) {
         val target = GeoPoint(pin.latitude, pin.longitude)
-        val zoom = binding.map.zoomLevelDouble.coerceAtLeast(16.5)
+        val zoom = kotlin.math.ceil(binding.map.zoomLevelDouble).coerceAtLeast(PIN_ZOOM)
 
         binding.map.controller.animateTo(target, zoom, 400L)
         binding.map.postDelayed({ showSheet(pin) }, 450)
@@ -276,7 +322,7 @@ class MapActivity : AppCompatActivity() {
      *
      * A scroll fires this continuously, and rebuilding the pin list under a
      * moving finger is what made panning stutter. While detailed, it rebuilds
-     * only once the view has moved far enough to have brought a new crag in.
+     * only once the view has left the box the pins were asked for.
      */
     private fun rebuild() {
         // A pinch fires a zoom event per frame, and rebuilding the pin list on
@@ -286,26 +332,25 @@ class MapActivity : AppCompatActivity() {
     }
 
     private fun rebuildNow() {
+        if (!loaded) return
+
         buildParking()
 
         val wanted = single == null && binding.map.zoomLevelDouble >= BUTTRESS_ZOOM
 
-        if (wanted == detailed && !wanted) return
-        if (wanted && detailed && !movedFar()) return
-
-        val swapped = wanted != detailed
-        detailed = wanted
-
-        buildPins()
-
-        // The legend only says which kinds of pin are on screen, so it changes
-        // when the mode does, not on every pan.
-        if (swapped) buildLegend()
+        if (wanted != detailed) {
+            detailed = wanted
+            buildPins()
+        } else if (detailed && !covered(marksAskedFor)) {
+            buildPins()
+        }
     }
 
     /**
      * Watches the map's own orientation. Rotation is a gesture on the map, not
      * an event the map reports, so this rides along with the drawing instead.
+     * The chip is changed after the frame rather than inside it: a visibility
+     * change mid-draw asks for a layout pass while one is being drawn.
      */
     private inner class NorthWatcher : org.osmdroid.views.overlay.Overlay() {
 
@@ -318,7 +363,9 @@ class MapActivity : AppCompatActivity() {
             if (turned == wasTurned) return
 
             wasTurned = turned
-            binding.north.visibility = if (turned) View.VISIBLE else View.GONE
+            binding.north.post {
+                binding.north.visibility = if (turned) View.VISIBLE else View.GONE
+            }
         }
     }
 
@@ -329,29 +376,59 @@ class MapActivity : AppCompatActivity() {
      * fraction leaves the map permanently soft — but jumping there the moment a
      * pinch ends feels like the map twitching out from under you. A short
      * animation does the same job and reads as the map settling.
+     *
+     * It settles about the point the pinch was centred on. About the screen's
+     * centre, the last bit of zoom slid whatever was under the fingers away
+     * from them.
      */
     private fun snapZoom() {
+        val focus = rotate.takePinchFocus()
         val zoom = binding.map.zoomLevelDouble
         val whole = Math.round(zoom).toDouble()
 
         // Already as good as level: leave it alone rather than animate nothing.
         if (kotlin.math.abs(zoom - whole) < 0.04) return
 
-        binding.map.controller.zoomTo(whole, SNAP_MS)
+        if (focus != null) {
+            binding.map.controller.zoomToFixing(whole, focus.x.toInt(), focus.y.toInt(), SNAP_MS)
+        } else {
+            binding.map.controller.zoomTo(whole, SNAP_MS)
+        }
     }
 
-    /** True once the view has shifted by a third of its own width or height. */
-    private fun movedFar(since: BoundingBox? = builtFor): Boolean {
-        val box = binding.map.boundingBox
-        val last = since ?: return true
+    /** True while the whole view sits inside [box]. */
+    private fun covered(box: Area?): Boolean {
+        if (box == null) return false
+        val view = binding.map.boundingBox
 
-        val latitudeSpan = box.latNorth - box.latSouth
-        val longitudeSpan = box.lonEast - box.lonWest
+        return view.latNorth <= box.north && view.latSouth >= box.south &&
+            view.lonEast <= box.east && view.lonWest >= box.west
+    }
 
-        return kotlin.math.abs(box.centerLatitude - last.centerLatitude) >
-            latitudeSpan / 3 ||
-            kotlin.math.abs(box.centerLongitude - last.centerLongitude) >
-            longitudeSpan / 3
+    /**
+     * The view grown by half itself on every side, so an ordinary pan stays
+     * inside what was asked for and costs no query.
+     */
+    private fun askingBox(): Area {
+        val view = binding.map.boundingBox
+        val latMargin = ((view.latNorth - view.latSouth) / 2).coerceAtLeast(MIN_MARGIN)
+        val lonMargin = ((view.lonEast - view.lonWest) / 2).coerceAtLeast(MIN_MARGIN)
+
+        return Area(
+            view.latNorth + latMargin,
+            view.lonEast + lonMargin,
+            view.latSouth - latMargin,
+            view.lonWest - lonMargin,
+        )
+    }
+
+    /**
+     * A box of degrees. Not osmdroid's BoundingBox, which can refuse one that
+     * overhangs a pole or the date line — and a margin round the view does.
+     */
+    private class Area(val north: Double, val east: Double, val south: Double, val west: Double) {
+        fun holds(latitude: Double, longitude: Double): Boolean =
+            latitude in south..north && longitude in west..east
     }
 
     /**
@@ -365,9 +442,14 @@ class MapActivity : AppCompatActivity() {
      * the more likely thing to be looking for.
      */
     private fun setUpSearch() {
-        binding.search.setOnItemClickListener { _, _, position, _ ->
-            found.getOrNull(position)?.let { (_, where) ->
-                binding.map.controller.animateTo(where, 15.0, 700L)
+        suggestions = Suggestions(this)
+        binding.search.setAdapter(suggestions)
+
+        binding.search.setOnItemClickListener { parent, _, position, _ ->
+            // By what was tapped, not by position in a list that may not match.
+            val picked = parent.getItemAtPosition(position) as? String
+            found.firstOrNull { it.first == picked }?.let { (_, where) ->
+                binding.map.controller.animateTo(where, SEARCH_ZOOM, 700L)
 
                 // Out of the way once it has done its job.
                 binding.search.setText("", false)
@@ -385,6 +467,26 @@ class MapActivity : AppCompatActivity() {
             pendingQuery = query
             settle.postDelayed(suggestWhenStill, SUGGEST_MS)
         }
+    }
+
+    /**
+     * The dropdown's list, shown exactly as given. The stock adapter filters
+     * again by prefix, which hid crags matched mid-name and shifted positions
+     * away from the list they were chosen from.
+     */
+    private class Suggestions(context: Context) :
+        ArrayAdapter<String>(context, android.R.layout.simple_dropdown_item_1line) {
+
+        private val everything = object : Filter() {
+            override fun performFiltering(constraint: CharSequence?) = FilterResults().apply {
+                count = this@Suggestions.count
+            }
+
+            override fun publishResults(constraint: CharSequence?, results: FilterResults?) =
+                notifyDataSetChanged()
+        }
+
+        override fun getFilter(): Filter = everything
     }
 
     private fun suggest(query: String) {
@@ -408,10 +510,13 @@ class MapActivity : AppCompatActivity() {
 
         // The geocoder is a network call, so the crags are offered first and
         // the places join them when they arrive.
-        if (!android.location.Geocoder.isPresent()) return
+        if (!android.location.Geocoder.isPresent()) {
+            if (hits.isEmpty()) note(getString(R.string.map_search_nothing, query))
+            return
+        }
 
         Thread {
-            val places = runCatching {
+            val answer = runCatching {
                 @Suppress("DEPRECATION")
                 android.location.Geocoder(this)
                     .getFromLocationName(query, PLACE_HITS)
@@ -425,7 +530,8 @@ class MapActivity : AppCompatActivity() {
 
                         name to GeoPoint(place.latitude, place.longitude)
                     }
-            }.getOrDefault(emptyList())
+            }
+            val places = answer.getOrDefault(emptyList())
 
             runOnUiThread {
                 if (isFinishing || binding.search.text?.toString()?.trim() != query) {
@@ -433,6 +539,15 @@ class MapActivity : AppCompatActivity() {
                 }
 
                 show(hits + places)
+
+                // The geocoder throws rather than answering when there is no
+                // signal, which is worth saying: "nothing" would be a lie.
+                if (hits.isEmpty() && places.isEmpty()) {
+                    note(
+                        getString(R.string.map_search_nothing, query) +
+                            if (answer.isFailure) "\n" + getString(R.string.map_search_offline) else ""
+                    )
+                }
             }
         }.start()
     }
@@ -440,13 +555,18 @@ class MapActivity : AppCompatActivity() {
     private fun show(hits: List<Pair<String, GeoPoint>>) {
         found = hits
 
-        binding.search.setSimpleItems(hits.map { it.first }.toTypedArray())
+        suggestions.clear()
+        suggestions.addAll(hits.map { it.first })
+        suggestions.notifyDataSetChanged()
+
         if (hits.isNotEmpty() && binding.search.hasFocus()) binding.search.showDropDown()
     }
 
     /** The reader's own position, when the permission is already granted. */
     private fun startLocating() {
-        if (!Nearby.granted(this)) return
+        // Once only: the grant callback comes back here, and a second overlay
+        // meant a second GPS listener and two dots.
+        if (locator != null || !Nearby.granted(this)) return
 
         locator = MyLocationNewOverlay(GpsMyLocationProvider(this), binding.map).apply {
             // osmdroid keeps two icons — a standing figure, and an arrow for
@@ -514,53 +634,123 @@ class MapActivity : AppCompatActivity() {
     }
 
     private fun centreOnFix() {
-        val fix = locator?.myLocation ?: Nearby.lastKnown(this)?.let {
-            GeoPoint(it.latitude, it.longitude)
+        whenFixed { fix ->
+            // A blurred fix should not be shown at street zoom: it would look
+            // far more certain than it is. Whole levels, so the snap has
+            // nothing left to do.
+            val precise = Nearby.precise(this)
+
+            binding.map.controller.animateTo(fix, if (precise) FIX_ZOOM else 13.0, 500L)
+            if (!precise) note(getString(R.string.approximate_fix))
+        }
+    }
+
+    /**
+     * The reader's position now: the live overlay's, or a last known fix from
+     * the last couple of minutes. An older one can be a valley away.
+     */
+    private fun currentFix(): GeoPoint? =
+        locator?.myLocation ?: Nearby.recent(this)?.let { GeoPoint(it.latitude, it.longitude) }
+
+    /**
+     * Runs [action] with a fix, waiting for the first one if there is none
+     * yet. Just after a grant there never is, and "no fix yet, try again" was
+     * the answer to the reader doing exactly what was asked. Only the latest
+     * request waits: tapping twice does not centre twice.
+     */
+    private fun whenFixed(action: (GeoPoint) -> Unit) {
+        currentFix()?.let {
+            action(it)
+            return
         }
 
-        if (fix == null) {
+        val live = locator
+        if (live == null) {
             note(getString(R.string.no_location))
             return
         }
 
-        // A blurred fix should not be shown at street zoom: it would look far
-        // more certain than it is.
-        val precise = Nearby.precise(this)
+        val alreadyWaiting = waitingForFix != null
+        waitingForFix = action
+        note(getString(R.string.map_locating))
+        if (alreadyWaiting) return
 
-        binding.map.controller.animateTo(fix, if (precise) 15.5 else 13.0, 500L)
-        if (!precise) note(getString(R.string.approximate_fix))
+        live.runOnFirstFix {
+            runOnUiThread {
+                val next = waitingForFix ?: return@runOnUiThread
+                waitingForFix = null
+                if (isDestroyed) return@runOnUiThread
+
+                val fix = currentFix()
+                if (fix != null) next(fix) else note(getString(R.string.no_location))
+            }
+        }
     }
 
     private fun prefs() = getSharedPreferences("location", MODE_PRIVATE)
 
+    private fun colourFor(type: String): Int = typeColours.getOrPut(type) { pinColour(type) }
+
+    private fun cragPin(card: CragCard) = Pin(
+        label = card.area,
+        latitude = card.latitude!!,
+        longitude = card.longitude!!,
+        colour = colourFor(card.dominantType),
+        crag = card.area,
+        glyph = pinGlyph(card.dominantType),
+        payload = card,
+    )
+
+    /** The library's own pins: every crag, or the buttresses in view. */
     private fun buildPins() {
-        builtFor = binding.map.boundingBox
-        val crag = single
+        if (single != null) return
 
-        val pins = when {
-            crag != null -> buttressPins(crag)
-            detailed -> onScreenButtressPins()
-            else -> crags.map {
-                Pin(
-                    label = it.area,
-                    latitude = it.latitude!!,
-                    longitude = it.longitude!!,
-                    colour = pinColours[it.area] ?: pinColour(""),
-                    crag = it.area,
-                    payload = it,
-                )
+        val generation = ++marksGeneration
+
+        if (!detailed) {
+            marksAskedFor = null
+            marks = cragPins
+            publish()
+
+            if (marks.isEmpty()) note(getString(R.string.map_nothing)) else frame(marks)
+            return
+        }
+
+        val box = askingBox()
+        marksAskedFor = box
+
+        val colour = ContextCompat.getColor(this, R.color.pin_buttress)
+        val library = cragPins
+
+        Thread {
+            val pins = onScreenButtressPins(box, colour) +
+                // A crag with no buttress rows at all has nothing in the
+                // buttress index, and vanished on zooming in. Its own pin
+                // stands in.
+                library.filter { pin ->
+                    (pin.payload as CragCard).buttressCount == 0 &&
+                        box.holds(pin.latitude, pin.longitude)
+                }
+
+            runOnUiThread {
+                if (generation != marksGeneration || isDestroyed) return@runOnUiThread
+                marks = pins
+                publish()
             }
-        }
+        }.start()
+    }
 
-        overlay.pins = pins
+    /** Fits the opening view to the pins, once. */
+    private fun frame(pins: List<Pin>) {
+        if (framed || pins.isEmpty()) return
+        framed = true
+        fitTo(pins)
+    }
 
-        if (pins.isEmpty() && !detailed) {
-            note(getString(R.string.map_nothing))
-        } else if (!framed && pins.isNotEmpty()) {
-            framed = true
-            fitTo(pins)
-        }
-
+    /** Hands both layers to the overlay, parking first so it draws beneath. */
+    private fun publish() {
+        overlay.pins = if (parking.isEmpty()) marks else parking + marks
+        buildLegend()
         binding.map.invalidate()
     }
 
@@ -569,7 +759,7 @@ class MapActivity : AppCompatActivity() {
      * back to the crag's own position, drawn faded and labelled as such, so
      * every buttress can still be reached from here.
      */
-    private fun buttressPins(crag: Crag): List<Pin> {
+    private fun buttressPins(crag: Crag, colour: Int): List<Pin> {
         val fallbackNeeded = crag.buttresses.count { !it.hasPin }
         if (fallbackNeeded > 0 && crag.hasPin) {
             note(resources.getQuantityString(
@@ -577,7 +767,7 @@ class MapActivity : AppCompatActivity() {
             ))
         }
 
-        return crag.buttresses.mapNotNull { buttress ->
+        val pins = crag.buttresses.mapNotNull { buttress ->
             val latitude = buttress.latitude ?: crag.latitude
             val longitude = buttress.longitude ?: crag.longitude
             if (latitude == null || longitude == null) return@mapNotNull null
@@ -586,34 +776,25 @@ class MapActivity : AppCompatActivity() {
                 label = buttress.name.ifBlank { crag.area },
                 latitude = latitude,
                 longitude = longitude,
-                colour = ContextCompat.getColor(this, R.color.pin_buttress),
+                colour = colour,
                 kind = PinKind.BUTTRESS,
                 crag = crag.area,
                 approximate = !buttress.hasPin,
                 payload = ButtressAt(crag, buttress),
             )
         }
+
+        if (pins.isEmpty()) note(getString(R.string.map_nothing))
+        return pins
     }
 
     /**
-     * Buttresses of the crags currently in view, the crag pin standing in where
-     * UKC publishes no position for one.
-     *
-     * Asked of the index by bounding box. It used to mean walking every crag in
-     * the library and every buttress of each — thousands of objects to draw the
-     * dozen on screen.
+     * Buttresses of the crags in [box], the crag pin standing in where UKC
+     * publishes no position for one. Blocking: asked of the index by bounding
+     * box, off the main thread.
      */
-    private fun onScreenButtressPins(): List<Pin> {
-        val box = binding.map.boundingBox
-        val margin = 0.02
-
-        val found = CragDb.pinsWithin(
-            this,
-            box.latSouth - margin,
-            box.latNorth + margin,
-            box.lonWest - margin,
-            box.lonEast + margin,
-        )
+    private fun onScreenButtressPins(box: Area, colour: Int): List<Pin> {
+        val found = CragDb.pinsWithin(this, box.south, box.north, box.west, box.east)
 
         return found.mapNotNull { at ->
             val latitude = at.latitude ?: return@mapNotNull null
@@ -623,7 +804,7 @@ class MapActivity : AppCompatActivity() {
                 label = at.name.ifBlank { at.cragArea },
                 latitude = latitude,
                 longitude = longitude,
-                colour = ContextCompat.getColor(this, R.color.pin_buttress),
+                colour = colour,
                 kind = PinKind.BUTTRESS,
                 crag = at.cragArea,
                 approximate = at.approximate,
@@ -634,61 +815,64 @@ class MapActivity : AppCompatActivity() {
 
     /**
      * Car parks, each its own square with no name: which crag one serves is on
-     * tap, not written beside it. One crag's map always has
-     * its own; the library map shows them only once zoomed in to where a car
-     * park is a decision rather than noise, and asks the index for just the
-     * ones in view.
+     * tap, not written beside it. One crag's map always has its own; the
+     * library map shows them only once zoomed in to where a car park is a
+     * decision rather than noise, and asks the index for just the ones in view.
+     * [then] runs once the answer is on the map.
      */
-    private fun buildParking(force: Boolean = false) {
+    private fun buildParking(force: Boolean = false, then: (() -> Unit)? = null) {
+        if (!loaded) return
+
         val crag = single
         val zoomed = binding.map.zoomLevelDouble >= PARKING_ZOOM
         val wanted = showParking && (crag != null || zoomed)
-        val had = parkingOverlay.pins.isNotEmpty()
 
         if (!wanted) {
-            parkingBuiltFor = null
-            if (had) {
-                parkingOverlay.pins = emptyList()
-                buildLegend()
-                binding.map.invalidate()
+            parkingAskedFor = null
+            parkingGeneration++
+            if (parking.isNotEmpty()) {
+                parking = emptyList()
+                publish()
             }
+            then?.invoke()
             return
         }
 
-        if (!force && parkingBuiltFor != null && (crag != null || !movedFar(parkingBuiltFor))) return
+        // One crag's parking is the whole of it, so it never needs asking again.
+        if (!force && covered(parkingAskedFor)) return
 
-        parkingBuiltFor = binding.map.boundingBox
+        val box = if (crag == null) askingBox() else WORLD
+        parkingAskedFor = box
 
-        val found = if (crag != null) {
-            CragDb.parking(this, crag.id)
-        } else {
-            val box = binding.map.boundingBox
-            val margin = 0.02
-            CragDb.parkingWithin(
-                this,
-                box.latSouth - margin,
-                box.latNorth + margin,
-                box.lonWest - margin,
-                box.lonEast + margin,
-            )
-        }
-
+        val generation = ++parkingGeneration
         val colour = ContextCompat.getColor(this, R.color.pin_parking)
 
-        parkingOverlay.pins = found.map { spot ->
-            Pin(
-                label = spot.cragArea,
-                latitude = spot.latitude,
-                longitude = spot.longitude,
-                colour = colour,
-                kind = PinKind.PARKING,
-                crag = spot.cragArea,
-                payload = spot,
-            )
-        }
+        Thread {
+            val spots = if (crag != null) {
+                CragDb.parking(this, crag.id)
+            } else {
+                CragDb.parkingWithin(this, box.south, box.north, box.west, box.east)
+            }
 
-        if (had != parkingOverlay.pins.isNotEmpty()) buildLegend()
-        binding.map.invalidate()
+            val pins = spots.map { spot ->
+                Pin(
+                    label = spot.cragArea,
+                    latitude = spot.latitude,
+                    longitude = spot.longitude,
+                    colour = colour,
+                    kind = PinKind.PARKING,
+                    crag = spot.cragArea,
+                    payload = spot,
+                )
+            }
+
+            runOnUiThread {
+                if (generation != parkingGeneration || isDestroyed) return@runOnUiThread
+                parking = pins
+                publish()
+                then?.invoke()
+            }
+        }.start()
     }
 
     /** Frames whatever is stored, however widely spread. */
@@ -713,40 +897,68 @@ class MapActivity : AppCompatActivity() {
         }
     }
 
-
     /**
-     * Only the types actually present, since a fixed key would list Winter to
-     * a reader whose library is all bouldering.
+     * Only what is actually drawn, since a fixed key would list Winter to a
+     * reader whose library is all bouldering. Each row carries the pin's own
+     * shape and letter, so the key reads without its colours as well.
      */
     private fun buildLegend() {
-        binding.legend.removeAllViews()
+        val rows = mutableListOf<LegendRow>()
 
-        if (::parkingOverlay.isInitialized && parkingOverlay.pins.isNotEmpty()) {
-            addLegend(getString(R.string.parking_legend), R.color.pin_parking)
+        if (parking.isNotEmpty()) {
+            rows += LegendRow(
+                getString(R.string.parking_legend),
+                ContextCompat.getColor(this, R.color.pin_parking),
+                "P", android.graphics.Color.WHITE, R.drawable.legend_square,
+            )
         }
 
-        if (single != null || detailed) {
-            addLegend(getString(R.string.buttresses_legend), R.color.pin_buttress)
-            return
+        if (marks.any { it.kind == PinKind.BUTTRESS }) {
+            rows += LegendRow(
+                getString(R.string.buttresses_legend),
+                ContextCompat.getColor(this, R.color.pin_buttress),
+                "", android.graphics.Color.WHITE, R.drawable.legend_diamond,
+            )
         }
 
-        val present = crags.mapNotNull { pinTypes[it.area] }
+        val glyphColour = ContextCompat.getColor(this, R.color.pin_glyph)
+        val types = marks
+            .mapNotNull { (it.payload as? CragCard)?.dominantType }
             .distinct()
-            .map { it to pinColour(it) }
-            .distinctBy { it.second }
+            .sorted()
+            .distinctBy { colourFor(it) }
 
-        for ((type, colour) in present.sortedBy { it.first }) {
-            addLegend(type.ifBlank { getString(R.string.type_unknown) }, null, colour)
+        for (type in types) {
+            rows += LegendRow(
+                type.ifBlank { getString(R.string.type_unknown) },
+                colourFor(type), pinGlyph(type), glyphColour, R.drawable.legend_disc,
+            )
         }
+
+        val shown = rows.map { it.text }
+        if (shown == legendShown) return
+        legendShown = shown
+
+        binding.legend.removeAllViews()
+        for (row in rows) addLegend(row)
     }
 
-    private fun addLegend(text: String, colourRes: Int?, colour: Int? = null) {
+    private class LegendRow(
+        val text: String,
+        val colour: Int,
+        val glyph: String,
+        val glyphColour: Int,
+        val shape: Int,
+    )
+
+    private fun addLegend(entry: LegendRow) {
         val row = ItemLegendBinding.inflate(layoutInflater, binding.legend, false)
 
-        row.name.text = text
-        row.dot.background = ColorDrawable(
-            colour ?: ContextCompat.getColor(this, colourRes!!)
-        )
+        row.name.text = entry.text
+        row.dot.setBackgroundResource(entry.shape)
+        row.dot.backgroundTintList = ColorStateList.valueOf(entry.colour)
+        row.dot.text = entry.glyph
+        row.dot.setTextColor(entry.glyphColour)
 
         binding.legend.addView(row.root)
     }
@@ -754,7 +966,8 @@ class MapActivity : AppCompatActivity() {
     private fun note(message: String) {
         binding.note.text = message
         binding.note.visibility = View.VISIBLE
-        binding.note.postDelayed({ binding.note.visibility = View.GONE }, 6000)
+        binding.note.removeCallbacks(hideNote)
+        binding.note.postDelayed(hideNote, NOTE_MS)
     }
 
     private fun showSheet(pin: Pin) {
@@ -766,10 +979,56 @@ class MapActivity : AppCompatActivity() {
             is CragCard -> fillCrag(view, what, pin, sheet)
             is ButtressAt -> fillButtress(view, what, pin, sheet)
             is ButtressPin -> fillPin(view, what, pin, sheet)
-            is ParkingPin -> fillParking(view, what, pin, sheet)
+            is ParkingPin -> fillParking(view, what, sheet)
         }
 
         sheet.show()
+    }
+
+    /** Opens a crag by id, with its name for a CragActivity that predates ids. */
+    private fun cragIntent(target: Class<*>, id: String, area: String): Intent =
+        Intent(this, target)
+            .putExtra(EXTRA_CRAG_ID, id)
+            .putExtra(CragActivity.EXTRA_AREA, area)
+
+    /**
+     * A crag's parking, read off the main thread. The sheet's directions wait
+     * for it: routing before it lands would skip the car park.
+     */
+    private fun withParking(cragId: String, use: (List<Parking>) -> Unit) {
+        Thread {
+            val spots = CragDb.parking(this, cragId).map { Parking(it.name, it.latitude, it.longitude) }
+            runOnUiThread { if (!isDestroyed) use(spots) }
+        }.start()
+    }
+
+    /**
+     * Directions from a sheet, by the same rule everywhere: the crag's parking
+     * when there is one and the reader has not turned that off, the pin
+     * otherwise. A buttress on a hillside is no place to send a satnav.
+     */
+    private fun directionsButton(
+        view: SheetPinBinding,
+        sheet: BottomSheetDialog,
+        area: String,
+        latitude: Double,
+        longitude: Double,
+        parking: List<Parking>,
+    ) {
+        view.directions.isEnabled = true
+        view.directions.setText(
+            if (Settings.directionsToParking(this) && parking.isNotEmpty()) R.string.directions_to_parking
+            else R.string.directions
+        )
+        view.directions.setOnClickListener {
+            sheet.dismiss()
+            Maps.directionsTo(this, area, latitude, longitude, parking)
+        }
+        view.directions.setOnLongClickListener {
+            sheet.dismiss()
+            Maps.directionsTo(this, area, latitude, longitude, parking, choose = true)
+            true
+        }
     }
 
     private fun fillCrag(
@@ -778,49 +1037,39 @@ class MapActivity : AppCompatActivity() {
         pin: Pin,
         sheet: BottomSheetDialog,
     ) {
-        val ticks = Ticks(this)
         val away = crag.metresFrom(Nearby.lastKnown(this))
 
-        view.name.text = crag.area
-        view.detail.text = buildString {
+        fun detail(ticked: Int?) = buildString {
             append(resources.getQuantityString(
                 R.plurals.climbs, crag.climbCount, crag.climbCount,
             ))
-            append(" · ").append(
-                getString(
-                    R.string.crag_progress, ticks.countIn(this@MapActivity, crag.id), crag.climbCount,
-                )
+            if (ticked != null) append(" · ").append(
+                getString(R.string.crag_progress, ticked, crag.climbCount)
             )
             if (away != null) append(" · ").append(Units.distance(this@MapActivity, away))
         }
 
+        view.name.text = crag.area
+        view.detail.text = detail(null)
+
+        // The tick count reads the crag's climb list from the index, so it
+        // joins the line once that is done rather than holding the sheet up.
+        Thread {
+            val ticked = Ticks(this).countIn(this, crag.id)
+            runOnUiThread { if (!isDestroyed) view.detail.text = detail(ticked) }
+        }.start()
+
         view.open.text = getString(R.string.open_crag)
         view.open.setOnClickListener {
             sheet.dismiss()
-            startActivity(
-                Intent(this, CragActivity::class.java)
-                    .putExtra(CragActivity.EXTRA_AREA, crag.area)
-            )
+            startActivity(cragIntent(CragActivity::class.java, crag.id, crag.area))
         }
 
         // Parking comes from the index, so the sheet can route to it without
         // reading the crag.
-        val parking = CragDb.parking(this, crag.id).map {
-            Parking(it.name, it.latitude, it.longitude)
-        }
-
-        view.directions.setText(
-            if (Settings.directionsToParking(this) && parking.isNotEmpty()) R.string.directions_to_parking
-            else R.string.directions
-        )
-        view.directions.setOnClickListener {
-            sheet.dismiss()
-            Maps.directionsTo(this, crag.area, pin.latitude, pin.longitude, parking)
-        }
-        view.directions.setOnLongClickListener {
-            sheet.dismiss()
-            Maps.directionsTo(this, crag.area, pin.latitude, pin.longitude, parking, choose = true)
-            true
+        view.directions.isEnabled = false
+        withParking(crag.id) { parking ->
+            directionsButton(view, sheet, crag.area, pin.latitude, pin.longitude, parking)
         }
 
         view.walk.setOnClickListener {
@@ -834,6 +1083,7 @@ class MapActivity : AppCompatActivity() {
             sheet.dismiss()
             startActivity(
                 Intent(this, TopoActivity::class.java)
+                    .putExtra(EXTRA_CRAG_ID, crag.id)
                     .putExtra(TopoActivity.EXTRA_AREA, crag.area)
             )
         }
@@ -863,15 +1113,14 @@ class MapActivity : AppCompatActivity() {
         view.open.setOnClickListener {
             sheet.dismiss()
             startActivity(
-                Intent(this, CragActivity::class.java)
-                    .putExtra(CragActivity.EXTRA_AREA, at.cragArea)
+                cragIntent(CragActivity::class.java, at.cragId, at.cragArea)
                     .putExtra(CragActivity.EXTRA_FIND, at.name)
             )
         }
 
-        view.directions.setOnClickListener {
-            sheet.dismiss()
-            Maps.open(this, pin.latitude, pin.longitude, at.name.ifBlank { at.cragArea })
+        view.directions.isEnabled = false
+        withParking(at.cragId) { parking ->
+            directionsButton(view, sheet, at.cragArea, pin.latitude, pin.longitude, parking)
         }
 
         view.walk.setOnClickListener {
@@ -882,11 +1131,14 @@ class MapActivity : AppCompatActivity() {
         view.topos.visibility = View.GONE
     }
 
-    /** A car park: which crag it serves, a way into that crag, and the drive there. */
+    /**
+     * A car park: which crag it serves, a way into that crag, the drive there,
+     * and the walk in from it — which is the walk anybody standing at a car
+     * park wants, wherever the reader happens to be now.
+     */
     private fun fillParking(
         view: SheetPinBinding,
         at: ParkingPin,
-        pin: Pin,
         sheet: BottomSheetDialog,
     ) {
         val away = Nearby.lastKnown(this)?.let {
@@ -903,10 +1155,7 @@ class MapActivity : AppCompatActivity() {
         view.open.text = getString(R.string.open_crag)
         view.open.setOnClickListener {
             sheet.dismiss()
-            startActivity(
-                Intent(this, CragActivity::class.java)
-                    .putExtra(CragActivity.EXTRA_AREA, at.cragArea)
-            )
+            startActivity(cragIntent(CragActivity::class.java, at.cragId, at.cragArea))
         }
 
         view.directions.setText(R.string.directions_to_parking)
@@ -917,7 +1166,22 @@ class MapActivity : AppCompatActivity() {
 
         view.walk.setOnClickListener {
             sheet.dismiss()
-            walkTo(at.cragId, null, null, pin)
+
+            val home = single?.takeIf { it.id == at.cragId }
+            val card = crags.firstOrNull { it.id == at.cragId }
+            val toLat = home?.latitude ?: card?.latitude
+            val toLon = home?.longitude ?: card?.longitude
+
+            if (toLat == null || toLon == null) {
+                note(getString(R.string.walk_no_crag_pin))
+                return@setOnClickListener
+            }
+
+            note(getString(R.string.walk_working))
+            startWalk(
+                at.cragId, at.latitude, at.longitude, toLat, toLon,
+                at.cragArea, getString(R.string.from_parking),
+            )
         }
 
         view.topos.visibility = View.GONE
@@ -946,18 +1210,15 @@ class MapActivity : AppCompatActivity() {
         view.open.setOnClickListener {
             sheet.dismiss()
             startActivity(
-                Intent(this, CragActivity::class.java)
-                    .putExtra(CragActivity.EXTRA_AREA, crag.area)
+                cragIntent(CragActivity::class.java, crag.id, crag.area)
                     // Into the search box rather than a hidden filter, so it
                     // is visible, removable, and narrows the topos as well.
                     .putExtra(CragActivity.EXTRA_FIND, buttress.name)
             )
         }
 
-        view.directions.setOnClickListener {
-            sheet.dismiss()
-            Maps.open(this, pin.latitude, pin.longitude, buttress.name)
-        }
+        // The whole crag is in hand, parking and all.
+        directionsButton(view, sheet, crag.area, pin.latitude, pin.longitude, crag.parking)
 
         view.walk.setOnClickListener {
             sheet.dismiss()
@@ -970,59 +1231,110 @@ class MapActivity : AppCompatActivity() {
     /**
      * Draws a walking line from the reader to a pin.
      *
+     * A walk needs the crag's id to cache its paths and its pin to fall back
+     * to, and nothing else about it — so it takes those rather than a crag.
+     *
+     * Too far to walk from where you are standing, the leg that matters is the
+     * walk-in: from the crag's car park, the nearest to the pin when there are
+     * several. That is the approach you want when planning from home. With no
+     * parking known, a buttress is still worth routing to from its crag's own
+     * pin; a crag is not, since that would be a line to itself.
+     */
+    private fun walkTo(cragId: String, cragLat: Double?, cragLon: Double?, pin: Pin) {
+        whenFixed { fix ->
+            val away = Walk.metresBetween(fix.latitude, fix.longitude, pin.latitude, pin.longitude)
+            val distance = Units.distance(this, away.toFloat())
+
+            if (away <= Walk.MAX_SPAN_METRES) {
+                note(getString(R.string.walk_working))
+                startWalk(cragId, fix.latitude, fix.longitude, pin.latitude, pin.longitude, pin.label, "")
+                return@whenFixed
+            }
+
+            Thread {
+                val spot = CragDb.parking(this, cragId).minByOrNull {
+                    Walk.metresBetween(it.latitude, it.longitude, pin.latitude, pin.longitude)
+                }
+
+                runOnUiThread {
+                    if (isDestroyed) return@runOnUiThread
+
+                    val fromCragPin = cragLat != null && cragLon != null &&
+                        Walk.metresBetween(cragLat, cragLon, pin.latitude, pin.longitude) > SAME_SPOT_METRES
+
+                    when {
+                        spot != null -> {
+                            note(getString(R.string.walk_from_parking, distance))
+                            startWalk(
+                                cragId, spot.latitude, spot.longitude, pin.latitude, pin.longitude,
+                                pin.label, getString(R.string.from_parking),
+                            )
+                        }
+                        fromCragPin -> {
+                            note(getString(R.string.walk_from_crag_no_parking, distance))
+                            startWalk(
+                                cragId, cragLat!!, cragLon!!, pin.latitude, pin.longitude,
+                                pin.label, getString(R.string.from_crag_pin),
+                            )
+                        }
+                        else -> note(getString(R.string.walk_far_no_parking, distance))
+                    }
+                }
+            }.start()
+        }
+    }
+
+    /**
      * The paths come from Overpass, asked for only here and cached per crag, so
      * a second buttress at the same crag costs nothing and a later visit works
      * with no signal. With no paths within reach the line is straight, and says
      * so rather than pretending.
      */
-    /**
-     * A walk needs the crag's id to cache its paths and its pin to fall back
-     * to, and nothing else about it — so it takes those rather than a crag.
-     */
-    private fun walkTo(cragId: String, cragLat: Double?, cragLon: Double?, pin: Pin) {
-        val fix = locator?.myLocation ?: Nearby.lastKnown(this)?.let {
-            GeoPoint(it.latitude, it.longitude)
-        }
-
-        if (fix == null) {
-            note(getString(R.string.no_location))
-            return
-        }
-
-        val away = Walk.metresBetween(
-            fix.latitude, fix.longitude, pin.latitude, pin.longitude,
-        )
-
-        // Too far to walk from where you are standing, so route the leg that
-        // matters: the crag's own pin to the buttress. That is the approach you
-        // actually want when planning from home, and it keeps the query small.
-        val distant = away > Walk.MAX_SPAN_METRES && cragLat != null && cragLon != null
-
-        val fromLat = if (distant) cragLat!! else fix.latitude
-        val fromLon = if (distant) cragLon!! else fix.longitude
-
-        note(
-            if (distant) getString(R.string.walk_from_crag, Units.distance(this, away.toFloat()))
-            else getString(R.string.walk_working)
-        )
-
+    private fun startWalk(
+        cragId: String,
+        fromLat: Double, fromLon: Double,
+        toLat: Double, toLon: Double,
+        label: String,
+        from: String,
+    ) {
         Thread {
-            val route = Walk.route(this, cragId, fromLat, fromLon, pin.latitude, pin.longitude)
+            val route = Walk.route(this, cragId, fromLat, fromLon, toLat, toLon)
 
-            runOnUiThread { drawWalk(route, pin, distant) }
+            runOnUiThread { if (!isDestroyed) drawWalk(route, label, from) }
         }.start()
     }
 
-    private fun drawWalk(route: WalkRoute, pin: Pin, fromCrag: Boolean = false) {
+    private fun drawWalk(route: WalkRoute, label: String, from: String) {
+        drawLine(route.points.map { GeoPoint(it.first, it.second) }, route.onPaths)
+
+        val distance = Units.distance(this, route.metres.toFloat())
+
+        // Far enough that no route was attempted: say that, rather than let it
+        // read as "there are no paths here".
+        note(
+            when {
+                route.tooFar -> getString(R.string.walk_too_far, distance)
+                route.partial -> getString(R.string.walk_partly, distance, label)
+                route.onPaths -> getString(R.string.walk_on_paths, distance, label)
+                else -> getString(R.string.walk_straight, distance, label)
+            } + from
+        )
+    }
+
+    private fun drawLine(points: List<GeoPoint>, onPaths: Boolean) {
         walkLine.forEach { binding.map.overlays.remove(it) }
 
-        val points = route.points.map { GeoPoint(it.first, it.second) }
+        walkPoints = points
+        walkOnPaths = onPaths
+
+        // Sized in dp: in pixels the line was a hair on a dense screen.
+        val density = resources.displayMetrics.density
 
         // A map is already full of greens and greys, so the line gets an orange
         // core over a dark casing: readable over fields, woods, water or rock.
         val casing = Polyline(binding.map).apply {
             setPoints(points)
-            outlinePaint.strokeWidth = 18f
+            outlinePaint.strokeWidth = 6.5f * density
             outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
             outlinePaint.color = ContextCompat.getColor(this@MapActivity, R.color.walk_casing)
             outlinePaint.alpha = 210
@@ -1030,13 +1342,13 @@ class MapActivity : AppCompatActivity() {
 
         val core = Polyline(binding.map).apply {
             setPoints(points)
-            outlinePaint.strokeWidth = 10f
+            outlinePaint.strokeWidth = 3.5f * density
             outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
             outlinePaint.color = ContextCompat.getColor(this@MapActivity, R.color.walk_line)
 
             // A guessed line should not look as certain as a followed path.
-            if (!route.onPaths) outlinePaint.pathEffect =
-                android.graphics.DashPathEffect(floatArrayOf(22f, 18f), 0f)
+            if (!onPaths) outlinePaint.pathEffect =
+                android.graphics.DashPathEffect(floatArrayOf(8f * density, 6.5f * density), 0f)
         }
 
         walkLine = listOf(casing, core)
@@ -1044,31 +1356,12 @@ class MapActivity : AppCompatActivity() {
         binding.map.overlays.add(0, core)
         binding.map.overlays.add(0, casing)
         binding.map.invalidate()
-
-        val distance = Units.distance(this, route.metres.toFloat())
-        val where = if (fromCrag) getString(R.string.from_crag_pin) else ""
-
-        // Far enough that no route was attempted: say that, rather than let it
-        // read as "there are no paths here".
-        if (route.tooFar) {
-            Toast.makeText(
-                this, getString(R.string.walk_too_far, distance), Toast.LENGTH_LONG,
-            ).show()
-        }
-
-        note(
-            when {
-                route.tooFar -> getString(R.string.walk_too_far, distance)
-                route.partial -> getString(R.string.walk_partly, distance, pin.label)
-                route.onPaths -> getString(R.string.walk_on_paths, distance, pin.label)
-                else -> getString(R.string.walk_straight, distance, pin.label)
-            } + where
-        )
     }
 
     private fun clearWalk() {
         walkLine.forEach { binding.map.overlays.remove(it) }
         walkLine = emptyList()
+        walkPoints = emptyList()
         binding.clearWalk.visibility = View.GONE
         binding.map.invalidate()
     }
@@ -1082,10 +1375,6 @@ class MapActivity : AppCompatActivity() {
     private fun applySource(id: String) {
         MapSources.choose(this, id)
 
-        val tiles = MapSources.tileSource(id)
-
-        binding.map.tileProvider?.detach()
-
         val provider = org.osmdroid.tileprovider.MapTileProviderBasic(this)
 
         // Cache and approximation before the network. osmdroid can fill a tile
@@ -1096,26 +1385,39 @@ class MapActivity : AppCompatActivity() {
         // sharpening as the real tiles land.
         provider.setOfflineFirst(true)
 
+        // setTileProvider detaches the provider it replaces itself.
         binding.map.setTileProvider(provider)
-        binding.map.setTileSource(tiles)
+        binding.map.setTileSource(MapSources.tileSource(id))
 
-        // Every source runs out of data somewhere — 14 for Sentinel-2, 20 for
+        // Out of signal and past what is cached, osmdroid draws a grey grid of
+        // "no tile" squares. The pins, the walking line and the location dot
+        // are the parts that actually navigate, so let them sit on a plain
+        // ground instead of a chessboard. A new provider brings a new tiles
+        // overlay with the chessboard back, so this follows every switch.
+        binding.map.overlayManager.tilesOverlay.apply {
+            loadingBackgroundColor = ContextCompat.getColor(this@MapActivity, R.color.map_empty)
+            loadingLineColor = ContextCompat.getColor(this@MapActivity, R.color.map_empty_line)
+        }
+
+        // Every source runs out of data somewhere — 14 for Sentinel-2, 19 for
         // Esri — and past that osmdroid enlarges the deepest tile it has. Soft
         // pixels beat a wall you cannot zoom through when you are trying to see
         // which side of a wall a boulder sits on, so the map goes further in
         // than any of them can actually draw.
         binding.map.maxZoomLevel = MAP_MAX_ZOOM
 
-        // All of these require crediting, and the credit belongs on the map.
+        // All of these require crediting, and the credit belongs on the map —
+        // as a way to the licence, not just a line of small print.
         binding.credit.text = MapSources.attribution(this, id)
+        binding.credit.setOnClickListener { Maps.openUrl(this, MapSources.attributionUrl(id)) }
         binding.map.invalidate()
 
         invalidateOptionsMenu()
     }
 
-    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
-        // Built by hand rather than from XML: which sources exist depends on
-        // whether the reader has dropped an API key in beside their maps.
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        // Built by hand rather than from XML: the sources are MapSources' list,
+        // and the checked one is whatever was chosen last.
         val chosen = MapSources.chosen(this)
 
         for ((order, id) in MapSources.available().withIndex()) {
@@ -1136,7 +1438,7 @@ class MapActivity : AppCompatActivity() {
         return true
     }
 
-    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
         val sources = MapSources.available()
 
         if (item.groupId == MENU_SOURCES && item.itemId in sources.indices) {
@@ -1148,11 +1450,16 @@ class MapActivity : AppCompatActivity() {
             showParking = !showParking
             Settings.setShowParking(this, showParking)
             item.isChecked = showParking
-            buildParking(force = true)
 
-            // Zoomed out, turning them on shows nothing yet; say why.
-            if (showParking && parkingOverlay.pins.isEmpty()) {
-                note(getString(if (single == null) R.string.parking_zoom_in else R.string.parking_none))
+            // Zoomed out, turning them on shows nothing yet; say why. One
+            // crag's map says so only once its parking has been looked up.
+            val tooFarOut = single == null && binding.map.zoomLevelDouble < PARKING_ZOOM
+            if (showParking && tooFarOut) note(getString(R.string.parking_zoom_in))
+
+            buildParking(force = true) {
+                if (showParking && single != null && parking.isEmpty()) {
+                    note(getString(R.string.parking_none))
+                }
             }
             return true
         }
@@ -1170,12 +1477,16 @@ class MapActivity : AppCompatActivity() {
      * old answer, and a size says nothing about whether the crag on screen
      * will draw — so the view in hand is checked zoom by zoom, alongside how
      * full the store is and what each map type holds.
+     *
+     * Zoomed in past the deepest level a source has, the map is enlarging
+     * that level's tiles, so that level is the one checked.
      */
     private fun showCache() {
         val source = binding.map.tileProvider.tileSource
         val box = binding.map.boundingBox
-        val zoom = binding.map.zoomLevelDouble.toInt()
         val deepest = source.maximumZoomLevel
+        val actual = binding.map.zoomLevelDouble.toInt()
+        val zoom = actual.coerceIn(source.minimumZoomLevel, deepest)
         val zooms = (zoom - 1).coerceAtLeast(source.minimumZoomLevel)..(zoom + 2).coerceAtMost(deepest)
         val sourceLabel = MapSources.label(this, MapSources.chosen(this))
 
@@ -1220,8 +1531,8 @@ class MapActivity : AppCompatActivity() {
                         level.zoom, level.saved * 100 / level.total, level.saved, level.total,
                     )
                 }
-                if (zoom > deepest) lines += getString(R.string.map_cache_overzoom, deepest)
             }
+            if (actual > deepest) lines += getString(R.string.map_cache_overzoom, deepest)
 
             lines += ""
             lines += getString(R.string.map_cache_how)
@@ -1230,6 +1541,42 @@ class MapActivity : AppCompatActivity() {
                 if (!isDestroyed && dialog.isShowing) dialog.setMessage(lines.joinToString("\n"))
             }
         }.start()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+
+        val centre = binding.map.mapCenter
+        outState.putDouble(STATE_LATITUDE, centre.latitude)
+        outState.putDouble(STATE_LONGITUDE, centre.longitude)
+        outState.putDouble(STATE_ZOOM, binding.map.zoomLevelDouble)
+        outState.putFloat(STATE_ORIENTATION, binding.map.mapOrientation)
+
+        if (walkPoints.isNotEmpty()) {
+            val flat = DoubleArray(walkPoints.size * 2)
+            walkPoints.forEachIndexed { i, point ->
+                flat[i * 2] = point.latitude
+                flat[i * 2 + 1] = point.longitude
+            }
+            outState.putDoubleArray(STATE_WALK, flat)
+            outState.putBoolean(STATE_WALK_PATHS, walkOnPaths)
+        }
+    }
+
+    /** Back where the reader was, which also means the opening fit is skipped. */
+    private fun restore(state: Bundle) {
+        if (!state.containsKey(STATE_ZOOM)) return
+
+        framed = true
+        binding.map.controller.setZoom(state.getDouble(STATE_ZOOM))
+        binding.map.controller.setCenter(
+            GeoPoint(state.getDouble(STATE_LATITUDE), state.getDouble(STATE_LONGITUDE))
+        )
+        binding.map.mapOrientation = state.getFloat(STATE_ORIENTATION)
+
+        val flat = state.getDoubleArray(STATE_WALK) ?: return
+        val points = (0 until flat.size / 2).map { GeoPoint(flat[it * 2], flat[it * 2 + 1]) }
+        if (points.size >= 2) drawLine(points, state.getBoolean(STATE_WALK_PATHS))
     }
 
     override fun onResume() {
@@ -1248,11 +1595,19 @@ class MapActivity : AppCompatActivity() {
         /** Set to a crag's name to map that crag's buttresses instead. */
         const val EXTRA_AREA = "area"
 
+        /** A crag's id, preferred over [EXTRA_AREA]: names are not unique. */
+        const val EXTRA_CRAG_ID = "crag_id"
+
         /** Zoom at which buttresses are far enough apart to be worth drawing. */
         private const val BUTTRESS_ZOOM = 15.0
 
         /** As far in as the map will go, whatever the source can supply. */
         private const val MAP_MAX_ZOOM = 21.0
+
+        /** Where a chosen pin, a found place and the reader's own fix are shown. */
+        private const val PIN_ZOOM = 17.0
+        private const val SEARCH_ZOOM = 15.0
+        private const val FIX_ZOOM = 16.0
 
         private const val MENU_SOURCES = 1
         private const val MENU_CACHE = 900
@@ -1264,6 +1619,15 @@ class MapActivity : AppCompatActivity() {
          * enough to its crag to read as that crag's.
          */
         private const val PARKING_ZOOM = 14.0
+
+        /** Least margin, in degrees, around a box asked of the index. */
+        private const val MIN_MARGIN = 0.02
+
+        /** Asked for once a crag's own parking is loaded: always covered. */
+        private val WORLD = Area(90.0, 180.0, -90.0, -180.0)
+
+        /** Closer than this to its crag's pin, a buttress is not worth a walk from it. */
+        private const val SAME_SPOT_METRES = 50.0
 
         /** How long the map has to sit still before the pins are rebuilt. */
         private const val SETTLE_MS = 140L
@@ -1277,10 +1641,20 @@ class MapActivity : AppCompatActivity() {
         /** How long typing has to stop before anything is looked up. */
         private const val SUGGEST_MS = 300L
 
+        /** How long a note stays up. */
+        private const val NOTE_MS = 6000L
+
         private const val CRAG_HITS = 6
         private const val PLACE_HITS = 3
 
         /** Precision is asked for once, then left alone. */
         private const val KEY_ASKED_PRECISE = "asked_precise"
+
+        private const val STATE_LATITUDE = "latitude"
+        private const val STATE_LONGITUDE = "longitude"
+        private const val STATE_ZOOM = "zoom"
+        private const val STATE_ORIENTATION = "orientation"
+        private const val STATE_WALK = "walk"
+        private const val STATE_WALK_PATHS = "walk_paths"
     }
 }

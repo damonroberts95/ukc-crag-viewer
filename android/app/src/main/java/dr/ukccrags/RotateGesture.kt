@@ -28,6 +28,13 @@ import org.osmdroid.views.overlay.Overlay
  * the twist in overlay coordinates while turning the map means the measurement
  * turns with it: each frame's rotation inflates the next and the map spins away
  * on a tiny twist.
+ *
+ * Below API 29 there are no per-pointer raw coordinates, so rotation is off
+ * there rather than half-working: the overlay-frame values have the map's own
+ * turn baked in and the same feedback spins it away.
+ *
+ * It also remembers where the last pinch was centred, which is the point the
+ * settling zoom should hold still: see [takePinchFocus].
  */
 class RotateGesture(private val map: MapView) : Overlay() {
 
@@ -42,11 +49,42 @@ class RotateGesture(private val map: MapView) : Overlay() {
     /** The angle last acted on, so only the change is applied. */
     private var lastAngle = 0f
 
+    /**
+     * Midpoint of the fingers in the frame MapView's own pinch sees — the
+     * event as handed to overlays — so a zoom fixed on it continues the pinch
+     * rather than sliding the map. NaN when there has been no pinch since the
+     * last one was taken.
+     */
+    private var focusX = Float.NaN
+    private var focusY = Float.NaN
+
+    /**
+     * Where the last pinch was centred, once. A zoom that settles about the
+     * screen's centre instead shifts whatever was under the fingers.
+     */
+    fun takePinchFocus(): android.graphics.PointF? {
+        if (focusX.isNaN()) return null
+
+        val focus = android.graphics.PointF(focusX, focusY)
+        focusX = Float.NaN
+        focusY = Float.NaN
+        return focus
+    }
+
     override fun onTouchEvent(event: MotionEvent, mapView: MapView): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_POINTER_DOWN -> if (event.pointerCount == 2) begin(event)
+            MotionEvent.ACTION_DOWN -> {
+                focusX = Float.NaN
+                focusY = Float.NaN
+            }
 
-            MotionEvent.ACTION_MOVE -> if (event.pointerCount == 2) move(event)
+            MotionEvent.ACTION_POINTER_DOWN -> if (event.pointerCount == 2 && ROTATES) begin(event)
+
+            MotionEvent.ACTION_MOVE -> if (event.pointerCount >= 2) {
+                focusX = (event.getX(0) + event.getX(1)) / 2f
+                focusY = (event.getY(0) + event.getY(1)) / 2f
+                if (event.pointerCount == 2 && ROTATES) move(event)
+            }
 
             MotionEvent.ACTION_POINTER_UP,
             MotionEvent.ACTION_UP,
@@ -58,6 +96,7 @@ class RotateGesture(private val map: MapView) : Overlay() {
         return false
     }
 
+    @androidx.annotation.RequiresApi(29)
     private fun begin(event: MotionEvent) {
         claim = Claim.UNDECIDED
         startSpread = spread(event)
@@ -65,6 +104,7 @@ class RotateGesture(private val map: MapView) : Overlay() {
         lastAngle = startAngle
     }
 
+    @androidx.annotation.RequiresApi(29)
     private fun move(event: MotionEvent) {
         val nowSpread = spread(event)
         val nowAngle = angle(event)
@@ -95,10 +135,12 @@ class RotateGesture(private val map: MapView) : Overlay() {
         map.invalidate()
     }
 
+    @androidx.annotation.RequiresApi(29)
     private fun spread(event: MotionEvent): Float =
         hypot(rawX(event, 1) - rawX(event, 0), rawY(event, 1) - rawY(event, 0))
 
     /** Clockwise-positive, since screen y runs downwards. */
+    @androidx.annotation.RequiresApi(29)
     private fun angle(event: MotionEvent): Float = Math.toDegrees(
         atan2(
             (rawY(event, 1) - rawY(event, 0)).toDouble(),
@@ -106,17 +148,12 @@ class RotateGesture(private val map: MapView) : Overlay() {
         )
     ).toFloat()
 
-    // Raw, per-pointer screen coordinates arrived in API 29. Below that the
-    // overlay-frame values are all there is, and the map's own rotation is
-    // baked into them; a twist there reads bigger than it is, so it is damped
-    // by the same cap that catches a finger swap.
-    private fun rawX(event: MotionEvent, pointer: Int): Float =
-        if (android.os.Build.VERSION.SDK_INT >= 29) event.getRawX(pointer)
-        else event.getX(pointer)
+    // Only ever reached where ROTATES holds.
+    @androidx.annotation.RequiresApi(29)
+    private fun rawX(event: MotionEvent, pointer: Int): Float = event.getRawX(pointer)
 
-    private fun rawY(event: MotionEvent, pointer: Int): Float =
-        if (android.os.Build.VERSION.SDK_INT >= 29) event.getRawY(pointer)
-        else event.getY(pointer)
+    @androidx.annotation.RequiresApi(29)
+    private fun rawY(event: MotionEvent, pointer: Int): Float = event.getRawY(pointer)
 
     /** Keeps a turn through the ±180° seam from reading as a full spin. */
     private fun shortestWay(degrees: Float): Float {
@@ -127,6 +164,9 @@ class RotateGesture(private val map: MapView) : Overlay() {
     }
 
     private companion object {
+        /** Raw per-pointer coordinates, which rotation needs, arrived in API 29. */
+        val ROTATES = android.os.Build.VERSION.SDK_INT >= 29
+
         /** Fingers moving 8% closer or further apart is a pinch, not a twist. */
         const val SPREAD_SLOP = 0.08f
 

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Text on the map's own scrim, which is dark in both themes. -->
+    <color name="map_credit_text">#F2F2EF</color>
+    <color name="map_note_text">#FFFFFF</color>
+
+    <!-- The type letter in a crag's disc: white on the deep daytime colours. -->
+    <color name="pin_glyph">#FFFFFF</color>
+</resources>

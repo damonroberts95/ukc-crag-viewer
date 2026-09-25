@@ -17,10 +17,12 @@ import org.osmdroid.util.MapTileIndex
  * tiles already drawn are kept for a year (see [App]), so anywhere looked at
  * beforehand still draws with no signal.
  *
- * Both sources are keyless, so there is nothing to configure and no secret to
- * keep out of the repository. Esri is the sharp one and what the map opens on;
- * Sentinel-2 is coarse but the only layer here under a licence that plainly
- * permits this use, which makes it the fallback if Esri ever stops answering.
+ * All three sources are keyless, so there is nothing to configure and no
+ * secret to keep out of the repository. The map opens on OpenStreetMap, the
+ * one that shows paths, walls and car parks. Of the aerial layers Esri is the
+ * sharp one; Sentinel-2 is coarse but the only one under a licence that
+ * plainly permits this use, which makes it the fallback if Esri ever stops
+ * answering.
  */
 object MapSources {
 
@@ -30,10 +32,10 @@ object MapSources {
 
     private const val KEY_SOURCE = "source"
 
-    /** Imagery is somebody else's bandwidth: same courtesy as the OSM tiles. */
     /** Deepest zoom Esri holds real imagery for over open country. */
     private const val ESRI_DEEPEST = 19
 
+    /** Imagery is somebody else's bandwidth: same courtesy as the OSM tiles. */
     private val gentle = TileSourcePolicy(
         2,
         TileSourcePolicy.FLAG_NO_BULK or
@@ -85,8 +87,9 @@ object MapSources {
      * zoom whose view spans more than [limit] tiles is left out rather than
      * holding the dialog up.
      *
-     * Deliberately never detaches the writer: osmdroid shares one open
-     * database between every writer, the map's own included.
+     * The writer is not detached afterwards, and need not be: every
+     * SqlTileWriter shares one static database, the map's own included, and
+     * in osmdroid 6.1.20 its onDetach() does nothing at all.
      */
     fun cover(
         source: org.osmdroid.tileprovider.tilesource.ITileSource,
@@ -135,6 +138,18 @@ object MapSources {
             else -> R.string.credit_osm
         }
     )
+
+    /**
+     * Where the credit leads when tapped. Each of these asks for attribution
+     * that can be followed, not just read: OSM's licence page, EOX's page for
+     * the Sentinel-2 mosaic, and Esri's own description of World Imagery,
+     * which names its contributors and terms.
+     */
+    fun attributionUrl(id: String): String = when (id) {
+        ESRI -> "https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9"
+        SENTINEL -> "https://s2maps.eu"
+        else -> "https://www.openstreetmap.org/copyright"
+    }
 
     fun tileSource(id: String): OnlineTileSourceBase = when (id) {
         ESRI -> esri()

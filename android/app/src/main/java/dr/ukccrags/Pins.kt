@@ -4,7 +4,7 @@ import android.content.Context
 import androidx.core.content.ContextCompat
 
 /**
- * How a crag's pin is coloured, shared by both maps so they agree.
+ * How a crag's pin is marked, shared by the map and its legend so they agree.
  *
  * A pin says what kind of climbing is there before it is tapped, which is the
  * difference between a map of the library and a list of dots.
@@ -28,11 +28,25 @@ fun Context.pinColour(type: String): Int = ContextCompat.getColor(
         type.startsWith("Boulder", true) -> R.color.type_boulder
         type.equals("Trad", true) -> R.color.type_trad
         type.equals("Sport", true) -> R.color.type_sport
-        type.equals("Winter", true) || type.equals("Ice", true) ||
-            type.equals("Mixed", true) -> R.color.type_winter
+        isWinter(type) -> R.color.type_winter
         else -> R.color.type_other
     },
 )
 
-/** MapLibre styles want CSS, not an Android colour int. */
-fun Int.asCssColour(): String = String.format("#%06X", 0xFFFFFF and this)
+/**
+ * The same distinction as a letter in the disc. Trad and sport are a green and
+ * a red, the pair colour-blind eyes most often cannot tell apart, so colour
+ * alone left the commonest question on the map unanswered for some readers.
+ * Grouped exactly as the colours are, so a letter never disagrees with its
+ * disc; anything else stays a plain grey disc.
+ */
+fun pinGlyph(type: String): String = when {
+    type.startsWith("Boulder", true) -> "B"
+    type.equals("Trad", true) -> "T"
+    type.equals("Sport", true) -> "S"
+    isWinter(type) -> "W"
+    else -> ""
+}
+
+private fun isWinter(type: String): Boolean =
+    type.equals("Winter", true) || type.equals("Ice", true) || type.equals("Mixed", true)
