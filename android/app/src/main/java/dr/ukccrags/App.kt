@@ -13,10 +13,10 @@ import org.osmdroid.config.Configuration
  */
 class App : Application() {
 
-    private companion object {
-        const val TILE_KEEP_MS = 365L * 24 * 60 * 60 * 1000
+    companion object {
+        private const val TILE_KEEP_MS = 365L * 24 * 60 * 60 * 1000
         const val CACHE_MAX_BYTES = 600L * 1024 * 1024
-        const val CACHE_TRIM_BYTES = 500L * 1024 * 1024
+        private const val CACHE_TRIM_BYTES = 500L * 1024 * 1024
     }
 
     override fun onCreate() {

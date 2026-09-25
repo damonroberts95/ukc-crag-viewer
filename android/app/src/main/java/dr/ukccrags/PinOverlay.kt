@@ -42,6 +42,16 @@ data class Pin(
 class PinOverlay(
     private val onPin: (Pin) -> Unit,
     private val onCluster: (GeoPoint, List<Pin>) -> Unit,
+    /**
+     * Off for car parks. Two parks a hundred metres apart are two choices, and
+     * a bubble with a 2 in it hides exactly the thing being chosen between.
+     */
+    private val grouped: Boolean = true,
+    /**
+     * Off for car parks too: a park named after its crag doubles every crag
+     * name on screen. Tapping one still says which crag it serves.
+     */
+    private val named: Boolean = true,
 ) : Overlay() {
 
     var pins: List<Pin> = emptyList()
@@ -188,7 +198,7 @@ class PinOverlay(
                 }
 
                 hits.add(Triple(x, y, pin))
-                labelled.add(Triple(x, y, pin.label))
+                if (named) labelled.add(Triple(x, y, pin.label))
                 obstacles.add(RectF(x - radius, y - radius, x + radius, y + radius))
                 continue
             }
@@ -229,7 +239,7 @@ class PinOverlay(
             // Buttresses with no published position all pile onto their crag's
             // pin, and a bare count says nothing about where you are looking.
             // A group of crags stays a plain count: naming one would mislead.
-            if (buttresses || parking) {
+            if (named && (buttresses || parking)) {
                 val crag = group.map { it.crag }.distinct().singleOrNull()
                 if (!crag.isNullOrBlank()) labelled.add(Triple(x, y + bubble, crag))
             }
@@ -350,6 +360,13 @@ class PinOverlay(
      * into one drawn thing. Done once per zoom rather than once per frame.
      */
     private fun groupPins(cell: Double, worldSize: Double): List<Group> {
+        if (!grouped) {
+            return pins.map { pin ->
+                val (x, y) = worldPixels(pin.latitude, pin.longitude, worldSize)
+                Group(listOf(pin), x, y, pin.latitude, pin.longitude)
+            }
+        }
+
         val cells = LinkedHashMap<Long, MutableList<Pin>>()
         val places = HashMap<Pin, Pair<Double, Double>>(pins.size)
 

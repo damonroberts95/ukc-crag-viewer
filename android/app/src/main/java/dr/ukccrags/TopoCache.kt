@@ -54,9 +54,16 @@ object TopoCache {
     /** Photos still coming down. */
     fun queued(): Int = pending.get()
 
-    /** Starts a download and returns at once. */
+    /**
+     * Starts a download and returns at once. A photo already on disk is left
+     * alone: a topo id names one photo, and refreshing the library used to
+     * fetch and re-encode every one of them again — the bulk of the time a
+     * refresh took. A single-crag refresh deletes its photos first, so it
+     * still gets fresh ones.
+     */
     fun enqueue(context: Context, topoId: String, url: String) {
         val app = context.applicationContext
+        if (isCached(app, topoId)) return
         pending.incrementAndGet()
 
         pool.execute {

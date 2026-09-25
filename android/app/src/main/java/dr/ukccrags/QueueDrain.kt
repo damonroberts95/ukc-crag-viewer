@@ -49,6 +49,9 @@ object QueueDrain {
     /** How long to leave a broken connection before trying it again. */
     private const val RETRY_MS = 60_000L
 
+    /** Photos left downloading when the next batch may start anyway. */
+    private const val PHOTO_BACKLOG = 60
+
     private const val DELAY_MS = 250
     private const val WORKERS = 6
 
@@ -77,6 +80,46 @@ object QueueDrain {
     private var stopNow = false
 
     fun busy(): Boolean = running
+
+    /**
+     * What this session's reading has managed, for the queue's info window.
+     * Counted from when the app last started reading, not from the queue's
+     * birth: a rate that averaged in the hours the app sat closed would say
+     * nothing about how fast the reading is going.
+     */
+    object Stats {
+        /** When this session's reading began, 0 if it has not. */
+        @Volatile var since = 0L
+        /** Time actually spent reading, finished runs only. */
+        @Volatile var readingMs = 0L
+        /** When the current run began, 0 when nothing is reading. */
+        @Volatile var runStart = 0L
+        @Volatile var read = 0
+        @Volatile var failed = 0
+        @Volatile var empty = 0
+        @Volatile var throttles = 0
+        @Volatile var spacingMs = DELAY_MS
+        @Volatile var batches = 0
+        @Volatile var lastBatchMs = 0L
+        /** Crags done in the batch in hand, so the count moves between batches. */
+        @Volatile var inBatch = 0
+
+        /** Reading time so far, the run in hand included. */
+        fun elapsedMs(now: Long = System.currentTimeMillis()): Long =
+            readingMs + if (runStart > 0) now - runStart else 0L
+
+        internal fun runStarted() {
+            val now = System.currentTimeMillis()
+            if (since == 0L) since = now
+            runStart = now
+        }
+
+        internal fun runStopped() {
+            if (runStart > 0) readingMs += System.currentTimeMillis() - runStart
+            runStart = 0L
+            inBatch = 0
+        }
+    }
 
     /**
      * Starts reading if there is anything to read and nothing already reading.
@@ -121,6 +164,7 @@ object QueueDrain {
 
         running = true
         ImportState.running = true
+        Stats.runStarted()
 
         val handler = Handler(Looper.getMainLooper())
 
@@ -139,6 +183,7 @@ object QueueDrain {
         // a stuck or looping import rather than a steady one.
         var planned = 0
         var leftAtBatch = 0
+        var batchStart = 0L
 
         /** Crags this batch could not read, by URL. */
         val unread = java.util.Collections.synchronizedSet(mutableSetOf<String>())
@@ -159,6 +204,7 @@ object QueueDrain {
         }
 
         fun stop() {
+            Stats.runStopped()
             running = false
             ImportState.running = false
             handler.removeCallbacksAndMessages(null)
@@ -168,12 +214,13 @@ object QueueDrain {
         }
 
         /**
-         * Photos are queued as the pages are read and land afterwards. Starting
-         * the next batch on top of them would keep a pool of downloads running
-         * that nobody is waiting for.
+         * Photos are queued as the pages are read and land afterwards. Waiting
+         * for every last one before the next batch left the page reader idle
+         * for most of a run, so the next batch starts while a few are still
+         * coming down. A long backlog is still waited out: the links expire.
          */
         fun whenPhotosLand(then: () -> Unit) {
-            if (TopoCache.queued() <= 0) {
+            if (TopoCache.queued() <= PHOTO_BACKLOG) {
                 then()
                 return
             }
@@ -201,6 +248,7 @@ object QueueDrain {
                     app.getString(R.string.queue_done),
                     app.resources.getQuantityString(R.plurals.crags_found, held, held),
                 )
+                Stats.runStopped()
                 running = false
                 ImportState.running = false
                 handler.removeCallbacksAndMessages(null)
@@ -224,6 +272,8 @@ object QueueDrain {
             )
 
             unread.clear()
+            Stats.inBatch = 0
+            batchStart = System.currentTimeMillis()
             AppLog.add(app, "queue: reading a batch of ${batch.size}, $leftAtBatch left")
 
             // If a batch never reports back, the drain would sit "already
@@ -259,6 +309,12 @@ object QueueDrain {
 
             @JavascriptInterface
             fun finished(ok: Int, failed: Int) {
+                Stats.read += ok
+                Stats.failed += failed
+                Stats.batches++
+                Stats.inBatch = 0
+                Stats.lastBatchMs = System.currentTimeMillis() - batchStart
+
                 AppLog.add(app, "queue: batch done, $ok read, $failed failed, " +
                     "${(ImportQueue.size(app) - batch.size).coerceAtLeast(0)} left")
 
@@ -287,6 +343,7 @@ object QueueDrain {
             /** Crags with nothing worth storing: summits, mostly. */
             @JavascriptInterface
             fun emptyCrags(count: Int) {
+                Stats.empty += count
                 AppLog.add(app, "queue: $count had nothing to store — summits, not climbs")
             }
 
@@ -306,6 +363,7 @@ object QueueDrain {
 
             @JavascriptInterface
             fun progress(done: Int, total: Int, name: String) {
+                Stats.inBatch = done
                 // Where this batch has got to, counted against the whole queue.
                 val left = (leftAtBatch - done).coerceAtLeast(0)
 
@@ -324,6 +382,8 @@ object QueueDrain {
 
             @JavascriptInterface
             fun throttled(spacingMs: Int) {
+                Stats.throttles++
+                Stats.spacingMs = spacingMs
                 AppLog.add(app, "queue: UKC pushed back, spacing now ${spacingMs}ms")
             }
 

@@ -164,6 +164,8 @@ class MapActivity : AppCompatActivity() {
         parkingOverlay = PinOverlay(
             onPin = { showSheet(it) },
             onCluster = { centre, group -> openCluster(centre, group) },
+            grouped = false,
+            named = false,
         )
         showParking = Settings.showParking(this)
 
@@ -631,7 +633,8 @@ class MapActivity : AppCompatActivity() {
     }
 
     /**
-     * Car parks, labelled with the crag they serve. One crag's map always has
+     * Car parks, each its own square with no name: which crag one serves is on
+     * tap, not written beside it. One crag's map always has
      * its own; the library map shows them only once zoomed in to where a car
      * park is a decision rather than noise, and asks the index for just the
      * ones in view.
@@ -1155,15 +1158,78 @@ class MapActivity : AppCompatActivity() {
         }
 
         if (item.itemId == MENU_CACHE) {
-            Toast.makeText(
-                this,
-                getString(R.string.map_cached, MapSources.cachedMegabytes(this)),
-                Toast.LENGTH_LONG,
-            ).show()
+            showCache()
             return true
         }
 
         return super.onOptionsItemSelected(item)
+    }
+
+    /**
+     * What the tile cache means for going out with no signal. A size was the
+     * old answer, and a size says nothing about whether the crag on screen
+     * will draw — so the view in hand is checked zoom by zoom, alongside how
+     * full the store is and what each map type holds.
+     */
+    private fun showCache() {
+        val source = binding.map.tileProvider.tileSource
+        val box = binding.map.boundingBox
+        val zoom = binding.map.zoomLevelDouble.toInt()
+        val deepest = source.maximumZoomLevel
+        val zooms = (zoom - 1).coerceAtLeast(source.minimumZoomLevel)..(zoom + 2).coerceAtMost(deepest)
+        val sourceLabel = MapSources.label(this, MapSources.chosen(this))
+
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.map_cache_title)
+            .setMessage(R.string.map_cache_checking)
+            .setPositiveButton(android.R.string.ok, null)
+            .setNeutralButton(R.string.map_cache_settings) { _, _ ->
+                startActivity(Intent(this, SettingsActivity::class.java))
+            }
+            .show()
+
+        Thread {
+            val megabytes = MapSources.cachedMegabytes(this)
+            val capMegabytes = App.CACHE_MAX_BYTES / (1024 * 1024)
+            val bySource = MapSources.savedTiles()
+            val cover = MapSources.cover(source, box, zooms)
+
+            val lines = mutableListOf<String>()
+
+            lines += getString(
+                R.string.map_cache_used, megabytes, capMegabytes,
+                (megabytes * 100 / capMegabytes.coerceAtLeast(1)).toInt(),
+            )
+            lines += ""
+            lines += getString(R.string.map_cache_by_type)
+            for ((id, count) in bySource) {
+                lines += getString(
+                    R.string.map_cache_type_line, MapSources.label(this, id),
+                    String.format(java.util.Locale.UK, "%,d", count),
+                )
+            }
+
+            lines += ""
+            lines += getString(R.string.map_cache_view, sourceLabel)
+            if (cover.isEmpty()) {
+                lines += getString(R.string.map_cache_view_wide)
+            } else {
+                for (level in cover) {
+                    lines += getString(
+                        if (level.zoom == zoom) R.string.map_cache_zoom_now else R.string.map_cache_zoom,
+                        level.zoom, level.saved * 100 / level.total, level.saved, level.total,
+                    )
+                }
+                if (zoom > deepest) lines += getString(R.string.map_cache_overzoom, deepest)
+            }
+
+            lines += ""
+            lines += getString(R.string.map_cache_how)
+
+            runOnUiThread {
+                if (!isDestroyed && dialog.isShowing) dialog.setMessage(lines.joinToString("\n"))
+            }
+        }.start()
     }
 
     override fun onResume() {
@@ -1192,8 +1258,12 @@ class MapActivity : AppCompatActivity() {
         private const val MENU_CACHE = 900
         private const val MENU_PARKING = 901
 
-        /** Zoom at which the library map starts drawing car parks. */
-        private const val PARKING_ZOOM = 12.0
+        /**
+         * Zoom at which the library map starts drawing car parks. At 12 a
+         * whole valley's worth crowded the crags; by 14 a park sits near
+         * enough to its crag to read as that crag's.
+         */
+        private const val PARKING_ZOOM = 14.0
 
         /** How long the map has to sit still before the pins are rebuilt. */
         private const val SETTLE_MS = 140L

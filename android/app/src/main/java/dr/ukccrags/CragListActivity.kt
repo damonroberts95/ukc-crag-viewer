@@ -17,6 +17,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import dr.ukccrags.databinding.ActivityCragListBinding
+import dr.ukccrags.databinding.DialogQueueInfoBinding
 import dr.ukccrags.databinding.ItemCragBinding
 import dr.ukccrags.databinding.ItemFoundBinding
 import dr.ukccrags.databinding.ItemSectionBinding
@@ -126,10 +127,10 @@ class CragListActivity : AppCompatActivity() {
         // guesses from a button that says "Add crags".
         Guide.showOnce(this)
 
-        // A tap is impatience, not a stop: it starts the reading now rather
-        // than waiting for the next batch or the next time the app is opened.
-        // Pausing is the long press, and the overflow entry.
-        binding.queueLine.setOnClickListener { kickQueue() }
+        // A tap asks how it is going: a count alone cannot say whether a long
+        // queue is crawling or just long. Starting it now is a button in there;
+        // pausing is the long press, and the overflow entry.
+        binding.queueLine.setOnClickListener { showQueueInfo() }
         binding.queueLine.setOnLongClickListener { toggleQueue(); true }
 
         // Crags scraped before the database existed are still JSON files. Moving
@@ -175,6 +176,107 @@ class CragListActivity : AppCompatActivity() {
         refreshFromStore()
 
         Toast.makeText(this, R.string.queue_kicked, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * How the queue is getting on, kept current while it is open: how far,
+     * how fast, how long left, and the queue's own lines from the log — the
+     * log screen holds them too, buried under every sync and import.
+     */
+    private fun showQueueInfo() {
+        val view = DialogQueueInfoBinding.inflate(layoutInflater)
+        val ticker = android.os.Handler(mainLooper)
+
+        fun fill() {
+            val stats = QueueDrain.Stats
+            val left = ImportQueue.size(this)
+            val paused = with(ImportQueue) { queuePaused }
+            val handled = stats.read + stats.failed + stats.empty + stats.inBatch
+            val elapsed = stats.elapsedMs()
+
+            view.status.setText(
+                when {
+                    paused -> R.string.queue_info_paused
+                    QueueDrain.busy() -> R.string.queue_info_reading
+                    else -> R.string.queue_info_waiting
+                }
+            )
+
+            view.bar.max = (handled + left).coerceAtLeast(1)
+            view.bar.progress = handled
+
+            val lines = mutableListOf(
+                getString(R.string.queue_info_progress, handled, handled + left, left),
+            )
+
+            // Under half a minute or a handful of crags, a rate is mostly noise.
+            val perMinute = if (elapsed > 30_000 && handled >= 5) handled * 60_000.0 / elapsed else 0.0
+            lines += if (perMinute > 0) {
+                getString(
+                    R.string.queue_info_rate,
+                    String.format(java.util.Locale.UK, "%.0f", perMinute),
+                    duration((left / perMinute * 60_000).toLong()),
+                )
+            } else {
+                getString(R.string.queue_info_rate_unknown)
+            }
+
+            lines += getString(R.string.queue_info_counts, stats.read, stats.failed, stats.empty)
+            lines += getString(
+                R.string.queue_info_batches,
+                stats.batches, duration(stats.lastBatchMs), duration(elapsed),
+            )
+            lines += getString(R.string.queue_info_photos, TopoCache.queued())
+            if (stats.throttles > 0) {
+                lines += getString(R.string.queue_info_throttle, stats.throttles, stats.spacingMs)
+            }
+            lines += getString(R.string.queue_info_open)
+            view.stats.text = lines.joinToString("\n")
+
+            val log = AppLog.read(this).lineSequence()
+                .filter { "queue:" in it }
+                .toList()
+                .takeLast(60)
+                .joinToString("\n")
+
+            // Follow the end only when the reader is already there, so scrolling
+            // back to read an older line is not yanked away each second.
+            val atEnd = !view.logScroll.canScrollVertically(1)
+            view.log.text = log.ifBlank { getString(R.string.queue_info_log_empty) }
+            if (atEnd) view.logScroll.post { view.logScroll.fullScroll(View.FOCUS_DOWN) }
+        }
+
+        val tick = object : Runnable {
+            override fun run() {
+                fill()
+                ticker.postDelayed(this, 1000)
+            }
+        }
+
+        val paused = with(ImportQueue) { queuePaused }
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.queue_info_title)
+            .setView(view.root)
+            .setPositiveButton(R.string.queue_info_read_now) { _, _ -> kickQueue() }
+            .setNeutralButton(if (paused) R.string.queue_resume else R.string.queue_pause) { _, _ ->
+                toggleQueue()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .setOnDismissListener { ticker.removeCallbacksAndMessages(null) }
+            .show()
+
+        tick.run()
+        view.logScroll.post { view.logScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun duration(ms: Long): String {
+        val seconds = (ms / 1000).coerceAtLeast(0)
+        return when {
+            seconds >= 3600 -> "${seconds / 3600}h ${seconds % 3600 / 60}m"
+            seconds >= 60 -> "${seconds / 60}m ${seconds % 60}s"
+            else -> "${seconds}s"
+        }
     }
 
     /** Stops or starts the queue: the long press, and the overflow entry. */

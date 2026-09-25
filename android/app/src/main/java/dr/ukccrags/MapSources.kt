@@ -65,6 +65,62 @@ object MapSources {
         return cache.walkBottomUp().filter { it.isFile }.sumOf { it.length() } / (1024 * 1024)
     }
 
+    /** Tiles saved for one zoom of the view being looked at. */
+    data class ZoomCover(val zoom: Int, val saved: Int, val total: Int)
+
+    /**
+     * Tiles held per source, by the name osmdroid files them under. One query
+     * each against the cache's own index; nothing is loaded.
+     */
+    fun savedTiles(): Map<String, Long> {
+        val writer = org.osmdroid.tileprovider.modules.SqlTileWriter()
+        return available().associateWith { id ->
+            runCatching { writer.getRowCount(tileSource(id).name()) }.getOrDefault(0L)
+        }
+    }
+
+    /**
+     * How much of [box] would draw with no signal at each of [zooms]: the
+     * question the cache size alone cannot answer. Checked tile by tile, so a
+     * zoom whose view spans more than [limit] tiles is left out rather than
+     * holding the dialog up.
+     *
+     * Deliberately never detaches the writer: osmdroid shares one open
+     * database between every writer, the map's own included.
+     */
+    fun cover(
+        source: org.osmdroid.tileprovider.tilesource.ITileSource,
+        box: org.osmdroid.util.BoundingBox,
+        zooms: IntRange,
+        limit: Int = 1500,
+    ): List<ZoomCover> {
+        val writer = org.osmdroid.tileprovider.modules.SqlTileWriter()
+
+        return zooms.mapNotNull { zoom ->
+            val (left, top) = tileAt(box.latNorth, box.lonWest, zoom)
+            val (right, bottom) = tileAt(box.latSouth, box.lonEast, zoom)
+            val total = (right - left + 1) * (bottom - top + 1)
+            if (total <= 0 || total > limit) return@mapNotNull null
+
+            var saved = 0
+            for (x in left..right) for (y in top..bottom) {
+                val index = org.osmdroid.util.MapTileIndex.getTileIndex(zoom, x, y)
+                if (runCatching { writer.exists(source, index) }.getOrDefault(false)) saved++
+            }
+            ZoomCover(zoom, saved, total)
+        }
+    }
+
+    /** The standard slippy-map tile holding a point. */
+    private fun tileAt(latitude: Double, longitude: Double, zoom: Int): Pair<Int, Int> {
+        val n = 1 shl zoom
+        val x = ((longitude + 180.0) / 360.0 * n).toInt().coerceIn(0, n - 1)
+        val radians = Math.toRadians(latitude.coerceIn(-85.05112878, 85.05112878))
+        val y = ((1.0 - kotlin.math.ln(kotlin.math.tan(radians) + 1.0 / kotlin.math.cos(radians)) / Math.PI) / 2.0 * n)
+            .toInt().coerceIn(0, n - 1)
+        return x to y
+    }
+
     fun label(context: Context, id: String): String = when (id) {
         ESRI -> context.getString(R.string.map_esri)
         SENTINEL -> context.getString(R.string.map_sentinel)
