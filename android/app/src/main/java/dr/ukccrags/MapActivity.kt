@@ -1015,6 +1015,8 @@ class MapActivity : AppCompatActivity() {
         longitude: Double,
         parking: List<Parking>,
     ) {
+        // The crag in hand names its car parks by their nearest buttress too.
+        val buttresses = single?.takeIf { it.area == area }?.buttresses.orEmpty()
         view.directions.isEnabled = true
         // Same wording as the crag screen's button, from the same setting.
         view.directions.setText(
@@ -1026,11 +1028,11 @@ class MapActivity : AppCompatActivity() {
         )
         view.directions.setOnClickListener {
             sheet.dismiss()
-            Maps.directionsTo(this, area, latitude, longitude, parking)
+            Maps.directionsTo(this, area, latitude, longitude, parking, buttresses = buttresses)
         }
         view.directions.setOnLongClickListener {
             sheet.dismiss()
-            Maps.directionsTo(this, area, latitude, longitude, parking, choose = true)
+            Maps.directionsTo(this, area, latitude, longitude, parking, choose = true, buttresses = buttresses)
             true
         }
     }
@@ -1150,11 +1152,28 @@ class MapActivity : AppCompatActivity() {
         }
 
         view.name.text = at.cragArea
-        view.detail.text = buildString {
-            append(getString(R.string.parking_legend))
-            if (at.name.isNotBlank() && !at.name.equals(at.cragArea, true)) append(" · ").append(at.name)
+
+        fun detail(label: String) = buildString {
+            append(label)
             if (away != null) append(" · ").append(Units.distance(this@MapActivity, away))
         }
+
+        val spot = Parking(at.name, at.latitude, at.longitude)
+        view.detail.text = detail(ParkingNames.labels(this, at.cragArea, listOf(spot)).first())
+
+        // Which of the crag's car parks this is needs the others, and its
+        // buttresses: read off the main thread, then relabel.
+        Thread {
+            val crag = single?.takeIf { it.id == at.cragId } ?: CragStore.byId(this, at.cragId)
+            val all = crag?.parking ?: CragDb.parking(this, at.cragId).map {
+                Parking(it.name, it.latitude, it.longitude)
+            }
+            val label = ParkingNames.labelFor(this, at.cragArea, spot, all, crag?.buttresses.orEmpty())
+
+            runOnUiThread {
+                if (!isDestroyed && sheet.isShowing) view.detail.text = detail(label)
+            }
+        }.start()
 
         view.open.text = getString(R.string.open_crag)
         view.open.setOnClickListener {

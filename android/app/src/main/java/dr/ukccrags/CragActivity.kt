@@ -147,6 +147,7 @@ class CragActivity : AppCompatActivity() {
             Maps.directionsTo(
                 this, crag.area, crag.latitude, crag.longitude, crag.parking,
                 choose = Settings.asksBetween(this, crag.hasPin, crag.parking.isNotEmpty()),
+                buttresses = crag.buttresses,
             )
         }
 
@@ -154,6 +155,7 @@ class CragActivity : AppCompatActivity() {
         binding.cragDirections.setOnLongClickListener {
             Maps.directionsTo(
                 this, crag.area, crag.latitude, crag.longitude, crag.parking, choose = true,
+                buttresses = crag.buttresses,
             )
             true
         }

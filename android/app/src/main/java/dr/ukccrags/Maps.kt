@@ -46,13 +46,13 @@ object Maps {
         longitude: Double?,
         parking: List<Parking>,
         choose: Boolean = false,
+        buttresses: List<Buttress> = emptyList(),
     ) {
         val options = mutableListOf<Pair<String, () -> Unit>>()
+        val labels = ParkingNames.labels(context, area, parking, buttresses)
 
-        for (spot in parking) {
-            val name = spot.name.takeUnless { it.isBlank() || it.equals(area, true) }
-            val label = if (name == null) context.getString(R.string.directions_parking)
-            else context.getString(R.string.directions_parking_named, name)
+        for ((i, spot) in parking.withIndex()) {
+            val label = labels[i]
 
             options += label to {
                 open(context, spot.latitude, spot.longitude, context.getString(R.string.parking_for, area))
