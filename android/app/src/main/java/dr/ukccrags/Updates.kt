@@ -2,6 +2,8 @@ package dr.ukccrags
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -24,11 +26,16 @@ import java.net.URL
  * does: the release workflow attaches a signed APK to every `v*` tag, and
  * `releases/latest` describes it in one unauthenticated request.
  *
- * The APK is fetched and handed to the package installer here rather than
- * dropped on the browser, so the whole thing happens in one flow the user can
- * see. That is what needs REQUEST_INSTALL_PACKAGES and the FileProvider: the
- * installer runs in another process and cannot read this app's private files
- * without a granted content URI.
+ * The APK is fetched and installed here rather than dropped on the browser,
+ * so the whole thing happens in one flow the user can see. It goes in through
+ * a [PackageInstaller] session, not the installer's "open this file" screen:
+ * a session makes this app the installer of record and, from Android 14, the
+ * owner of its own updates, so after the first one Android lets the next
+ * install without a confirmation. It does not change what Play Protect makes
+ * of the build — that is decided by Google scanning it either way.
+ *
+ * The old route — a FileProvider URI handed to the system installer — stays
+ * as the fallback for a session Android refuses outright.
  */
 object Updates {
 
@@ -244,7 +251,7 @@ object Updates {
                         .setNegativeButton(android.R.string.cancel, null)
                         .show()
                 } else {
-                    handToInstaller(activity, file)
+                    installBySession(activity, file)
                 }
             }
         }.start()
@@ -400,6 +407,63 @@ object Updates {
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()
+    }
+
+    /**
+     * Writes the APK into an install session and commits it. Android answers
+     * through [InstallResult]: with a confirmation to show when it wants one,
+     * or by replacing this app — which ends this process, so success is
+     * never heard here.
+     *
+     * Blocking file work, so on its own thread; a failure before the commit
+     * falls back to [handToInstaller].
+     */
+    private fun installBySession(activity: Activity, apk: File) {
+        Toast.makeText(activity, R.string.update_installing, Toast.LENGTH_SHORT).show()
+        val app = activity.applicationContext
+
+        Thread {
+            val committed = runCatching {
+                val installer = app.packageManager.packageInstaller
+                val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+                    setAppPackageName(app.packageName)
+                    setSize(apk.length())
+                    setInstallReason(PackageManager.INSTALL_REASON_USER)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        setPackageSource(PackageInstaller.PACKAGE_SOURCE_DOWNLOADED_FILE)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        setRequestUpdateOwnership(true)
+                    }
+                }
+
+                val id = installer.createSession(params)
+                installer.openSession(id).use { session ->
+                    try {
+                        apk.inputStream().use { input ->
+                            session.openWrite("base.apk", 0, apk.length()).use { output ->
+                                input.copyTo(output, 64 * 1024)
+                                session.fsync(output)
+                            }
+                        }
+                        session.commit(InstallResult.sender(app, id))
+                    } catch (e: Exception) {
+                        session.abandon()
+                        throw e
+                    }
+                }
+            }
+
+            committed.onFailure {
+                Log.w("UKC", "install session failed, falling back to the installer: $it")
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    activity.runOnUiThread { handToInstaller(activity, apk) }
+                }
+            }
+        }.start()
     }
 
     /**

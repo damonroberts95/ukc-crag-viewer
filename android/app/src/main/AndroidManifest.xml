@@ -91,6 +91,11 @@
             directory. Not exported: the URI is handed out per intent with a
             read grant, so nothing can go looking on its own.
         -->
+        <!-- Android's answer to an update committed through an install session. -->
+        <receiver
+            android:name=".InstallResult"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.updates"
