@@ -20,12 +20,12 @@ export stay local.
 
 ## Building
 
-There is **no Gradle wrapper** in this project. Use the cached 8.11.1
+There is **no Gradle wrapper** in this project. Use the cached 9.9.2
 distribution:
 
 ```sh
 cd android
-G=$(ls -d ~/.gradle/wrapper/dists/gradle-8.11.1-bin/*/gradle-8.11.1/bin/gradle)
+G=$(ls -d ~/.gradle/wrapper/dists/gradle-9.9.2-bin/*/gradle-9.9.2/bin/gradle)
 "$G" :app:assembleDebug -q
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```

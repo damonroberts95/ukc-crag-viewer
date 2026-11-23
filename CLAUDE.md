@@ -19,16 +19,17 @@ and signing story.
 
 ## Build and run
 
-There is **no Gradle wrapper**. Use the cached 8.11.1 distribution:
+There is **no Gradle wrapper**. Use the cached 9.9.2 distribution (AGP 9.5 needs
+Gradle 9.6+; CI pins the same version):
 
 ```sh
 cd android
-G=$(ls -d ~/.gradle/wrapper/dists/gradle-8.11.1-bin/*/gradle-8.11.1/bin/gradle)
+G=$(ls -d ~/.gradle/wrapper/dists/gradle-9.9.2-bin/*/gradle-9.9.2/bin/gradle)
 "$G" :app:assembleDebug -q
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-JDK 17, Android SDK via untracked `local.properties`. `assembleRelease` works
+JDK 17, Android SDK (compileSdk 37) via untracked `local.properties`. `assembleRelease` works
 locally too — with no keystore present it falls back to the debug key.
 
 There is no test suite and no lint gate. A clean `assembleDebug` is the only

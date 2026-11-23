@@ -1,6 +1,5 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 // CI stamps the version from the git tag. The in-app updater compares the tag
@@ -20,7 +19,7 @@ val releaseKeystore = (System.getenv("KEYSTORE_FILE") ?: "release.keystore")
 
 android {
     namespace = "dr.ukccrags"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "dr.ukccrags"
@@ -66,10 +65,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         viewBinding = true
         buildConfig = true
@@ -77,12 +72,12 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("com.google.android.material:material:1.12.0")
-    implementation("androidx.recyclerview:recyclerview:1.3.2")
-    implementation("androidx.exifinterface:exifinterface:1.3.7")
-    implementation("androidx.constraintlayout:constraintlayout:2.2.0")
+    implementation("androidx.core:core-ktx:1.19.1")
+    implementation("androidx.appcompat:appcompat:1.8.0")
+    implementation("com.google.android.material:material:1.14.0")
+    implementation("androidx.recyclerview:recyclerview:1.4.0")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
+    implementation("androidx.constraintlayout:constraintlayout:2.2.2")
     // OpenStreetMap tiles: no API key, and it caches what it draws, which is
     // what lets the map work at a crag with no signal.
     implementation("org.osmdroid:osmdroid-android:6.1.20")
