@@ -119,7 +119,7 @@ object Nearby {
             val fix = runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
                 ?: continue
 
-            if (best == null || fix.time > best!!.time) best = fix
+            if (best == null || fix.time > best.time) best = fix
         }
 
         return best

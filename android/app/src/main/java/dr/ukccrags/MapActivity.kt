@@ -573,7 +573,8 @@ class MapActivity : AppCompatActivity() {
             // when a fix carries a bearing — and swaps between them as fixes
             // arrive, which reads as flickering. One dot for both states.
             val dot = locationDot()
-            setDirectionArrow(dot, dot)
+            setPersonIcon(dot)
+            setDirectionIcon(dot)
             setPersonAnchor(0.5f, 0.5f)
             setDirectionAnchor(0.5f, 0.5f)
 
@@ -1302,7 +1303,7 @@ class MapActivity : AppCompatActivity() {
                         fromCragPin -> {
                             note(getString(R.string.walk_from_crag_no_parking, distance))
                             startWalk(
-                                cragId, cragLat!!, cragLon!!, pin.latitude, pin.longitude,
+                                cragId, cragLat, cragLon, pin.latitude, pin.longitude,
                                 pin.label, getString(R.string.from_crag_pin),
                             )
                         }
