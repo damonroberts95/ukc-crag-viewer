@@ -200,6 +200,16 @@ object CragStore {
 
     fun parseJson(json: String): Crag? = runCatching { parse(JSONObject(json)) }.getOrNull()
 
+    /**
+     * A crag as UKC sent it, without the reader's own pins laid on — what
+     * [OwnPins] matches against when working out which crag a pin belongs to.
+     */
+    internal fun rawById(context: Context, id: String): Crag? {
+        val file = fileFor(context, id)
+        if (!file.exists()) return null
+        return runCatching { parseUkc(JSONObject(file.readText())) }.getOrNull()
+    }
+
     /** Deletes every imported crag, its topos and any saved photos. Ticks survive. */
     fun clear(context: Context) {
         synchronized(writeLock) {

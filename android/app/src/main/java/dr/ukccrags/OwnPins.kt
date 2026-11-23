@@ -49,6 +49,8 @@ object OwnPins {
     private class Plan(
         val nearby: Set<String>,
         val folders: Map<String, List<OwnFolder>>,
+        /** The pins each crag gets: its folders', less any a neighbour names better. */
+        val pins: Map<String, List<OwnPin>>,
         val parking: Map<String, List<Parking>>,
     )
 
@@ -58,6 +60,9 @@ object OwnPins {
     private const val PREFS = "own_pins"
     private const val KEY_APPLIED = "applied"
     private const val KEY_TOUCHED = "touched"
+
+    /** Raised whenever matching changes, so the next start re-derives with it. */
+    private const val MATCHER = 2
 
     /** In `assets/`. A build without it simply has no pins. */
     private const val ASSET = "own_pins.kml"
@@ -70,6 +75,9 @@ object OwnPins {
 
     /** Below this a pin and a buttress are different things. */
     private const val MATCH_FLOOR = 0.6
+
+    /** The bar for a pin to cross to a neighbouring crag's buttress. */
+    private const val AWAY_FLOOR = 0.75
 
     /** Called from [App.onCreate], so [dress] can read the pins from anywhere. */
     fun init(context: Context) {
@@ -100,7 +108,9 @@ object OwnPins {
      * set are re-derived, once. Off the main thread, after the library opens.
      */
     fun applyIfChanged(context: Context) {
-        val now = text(context)?.hashCode()?.toString() ?: ""
+        // The matcher's version too: a build that matches better must redo
+        // the rows even when the map itself is unchanged.
+        val now = text(context)?.let { "$MATCHER:${it.hashCode()}" } ?: ""
         val prefs = prefs(context)
         if (prefs.getString(KEY_APPLIED, null) == now) return
 
@@ -231,11 +241,11 @@ object OwnPins {
         ) return crag
 
         val current = planFor(context, all, crag)
-        val mine = current.folders[crag.id].orEmpty()
+        val mine = current.pins[crag.id].orEmpty()
         val parks = current.parking[crag.id].orEmpty()
         if (mine.isEmpty() && parks.isEmpty()) return crag
 
-        val (buttresses, _) = place(crag.buttresses, mine.flatMap { it.pins })
+        val (buttresses, _) = place(crag.buttresses, mine)
 
         val parking = crag.parking + parks.filter { park ->
             crag.parking.none { metres(it.latitude, it.longitude, park.latitude, park.longitude) < 40 }
@@ -257,7 +267,7 @@ object OwnPins {
             val places = candidates(context, all).filter { it.id != crag.id } +
                 CragDb.Place(crag.id, crag.area, crag.latitude!!, crag.longitude!!)
 
-            return assign(all, places).also { plan = it }
+            return assign(context, all, places, crag).also { plan = it }
         }
     }
 
@@ -268,7 +278,12 @@ object OwnPins {
      * "Shaptor Rock" finds plain "Bovey Woods", the sector UKC files under the
      * wood's own name.
      */
-    private fun assign(all: List<OwnFolder>, places: List<CragDb.Place>): Plan {
+    private fun assign(
+        context: Context,
+        all: List<OwnFolder>,
+        places: List<CragDb.Place>,
+        reading: Crag? = null,
+    ): Plan {
         val byCrag = HashMap<String, MutableList<OwnFolder>>()
         val leftover = mutableListOf<OwnFolder>()
 
@@ -296,6 +311,8 @@ object OwnPins {
             byCrag.getOrPut(nearest.id) { mutableListOf() }.add(folder)
         }
 
+        val pins = reallot(context, byCrag, reading)
+
         // Car parks to the nearest crag that has the reader's pins, else any.
         val served = places.filter { it.id in byCrag }.ifEmpty { places }
         val parking = HashMap<String, MutableList<Parking>>()
@@ -308,7 +325,80 @@ object OwnPins {
             parking.getOrPut(nearest.id) { mutableListOf() }.add(Parking(label, pin.latitude, pin.longitude))
         }
 
-        return Plan(places.map { it.id }.toSet(), byCrag, parking)
+        return Plan(places.map { it.id }.toSet(), byCrag, pins, parking)
+    }
+
+    /**
+     * A hand-made map's layers need not follow UKC's split of the wood: the
+     * Rock Copse layer holds the Wilderness and Pipe boulders, which UKC
+     * files under Lower Shaptor. So once each crag has matched its own
+     * folders, the pins left over are offered to the buttresses its
+     * neighbours left unplaced, and move to whichever names them — held to a
+     * stricter bar than at home, since a neighbour's buttress is the less
+     * likely meaning.
+     *
+     * A pin naming two things — "Bez's / Double Crack B" — is split into one
+     * per name first, both at the same spot.
+     */
+    private fun reallot(
+        context: Context,
+        byCrag: Map<String, List<OwnFolder>>,
+        reading: Crag?,
+    ): Map<String, List<OwnPin>> {
+        val pins = byCrag.mapValues { (_, folders) -> folders.flatMap { it.pins }.flatMap(::split) }
+
+        // UKC's own buttresses, with climbs: what is being read is in hand,
+        // and the rest come from their files without the pins laid on.
+        val ukc = byCrag.keys.associateWith { id ->
+            (if (reading?.id == id) reading else CragStore.rawById(context, id))
+                ?.buttresses?.filter { it.climbs.isNotEmpty() }.orEmpty()
+        }
+
+        val leftover = mutableListOf<Pair<String, OwnPin>>()
+        val open = mutableListOf<Pair<String, Buttress>>()
+        for ((id, mine) in pins) {
+            val made = place(ukc[id].orEmpty(), mine).second
+            val usedPins = made.map { it.first }.toSet()
+            val usedButtresses = made.map { it.second }.toSet()
+            mine.filter { it !in usedPins }.forEach { leftover += id to it }
+            ukc[id].orEmpty().filter { it !in usedButtresses }.forEach { open += id to it }
+        }
+
+        val moves = buildList {
+            for ((from, pin) in leftover) for ((to, buttress) in open) {
+                if (to == from) continue
+                val score = score(pin.name, buttress.name)
+                if (score >= AWAY_FLOOR) add(Triple(from to pin, to to buttress, score))
+            }
+        }.sortedByDescending { it.third }
+
+        val result = pins.mapValues { it.value.toMutableList() }
+        val moved = HashSet<OwnPin>()
+        val taken = HashSet<Buttress>()
+        for ((source, target, _) in moves) {
+            val (from, pin) = source
+            val (to, buttress) = target
+            if (pin in moved || buttress in taken) continue
+            moved += pin
+            taken += buttress
+            result[from]?.remove(pin)
+            result[to]?.add(pin)
+        }
+        return result
+    }
+
+    /** "Bez's / Double Crack B" → "Bez's B" and "Double Crack B", at one spot. */
+    private fun split(pin: OwnPin): List<OwnPin> {
+        val parts = pin.name.split(Regex("\\s*/\\s*")).map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.size < 2) return listOf(pin)
+
+        // A trailing kind ("B", "Wl") written once applies to every part.
+        val kind = Regex("\\s+(\\S+)$").find(parts.last())?.groupValues?.get(1)
+            ?.takeIf { it.lowercase() in SHORT }
+        return parts.mapIndexed { index, part ->
+            val named = if (kind != null && index < parts.size - 1 && !part.endsWith(" $kind")) "$part $kind" else part
+            pin.copy(name = named)
+        }
     }
 
     /**
@@ -365,13 +455,13 @@ object OwnPins {
         AppLog.add(context, "own pins: \"$title\", ${all.sumOf { it.pins.size }} pins in ${all.size} folders")
 
         val places = candidates(context, all)
-        val current = assign(all, places)
+        val current = assign(context, all, places)
         plan = current
 
-        for ((id, mine) in current.folders) {
-            val crag = synchronized(CragStore.writeLock) { CragStore.byId(context, id) } ?: continue
+        for ((id, pins) in current.pins) {
+            val mine = current.folders[id].orEmpty()
+            val crag = CragStore.rawById(context, id) ?: continue
             val raw = crag.copy(buttresses = crag.buttresses.filter { it.climbs.isNotEmpty() })
-            val pins = mine.flatMap { it.pins }
             val (_, made) = place(raw.buttresses, pins)
             val matchedPins = made.map { it.first }.toSet()
             val matchedButtresses = made.map { it.second.name }.toSet()
@@ -456,6 +546,9 @@ object OwnPins {
                 ours.isEmpty() -> 0.0
                 ours == theirs -> 1.0
                 ours.joinToString("") == theirs.joinToString("") -> 0.97
+                // "Submarine" for "Sub": one word each, one the start of the other.
+                ours.size == 1 && theirs.size == 1 && minOf(ours[0].length, theirs[0].length) >= 3 &&
+                    (ours[0].startsWith(theirs[0]) || theirs[0].startsWith(ours[0])) -> 0.7
                 ours.size == 1 && ours[0].length >= 3 &&
                     (ours[0] == initials(buttressName) ||
                         ours[0] == initials(words(buttressName, drop = setOf("boulder")).joinToString(" "))) -> 0.9
@@ -468,28 +561,36 @@ object OwnPins {
         val matched = ours.count { word -> theirs.any { same(word, it) } }
         if (matched == 0) return 0.0
         val dice = 2.0 * matched / (ours.size + theirs.size)
-        return if (matched == ours.size) 0.75 + 0.2 * dice else 0.8 * dice
+        return when {
+            matched == ours.size -> 0.75 + 0.2 * dice
+            // Every word of UKC's name in the pin's: "Kidney Stone" for "The Kidney".
+            theirs.all { word -> ours.any { same(word, it) } } -> 0.7 + 0.2 * dice
+            else -> 0.8 * dice
+        }
     }
 
-    /** One typo allowed in a word long enough to have one. */
+    /**
+     * One typo allowed — a letter wrong, missing, extra, or two swapped
+     * ("Mantle" for "Mantel") — in a word long enough to have one. Not in
+     * four letters: "Lost" and "Last" are different boulders.
+     */
     private fun same(a: String, b: String): Boolean {
         if (a == b) return true
-        if (a.length < 4 || b.length < 4 || abs(a.length - b.length) > 1) return false
+        if (a.length < 5 || b.length < 5 || abs(a.length - b.length) > 1) return false
         return editDistance(a, b) <= 1
     }
 
+    /** Edit distance counting a swap of neighbours as one edit. */
     private fun editDistance(a: String, b: String): Int {
-        var previous = IntArray(b.length + 1) { it }
-        for (i in 1..a.length) {
-            val row = IntArray(b.length + 1)
-            row[0] = i
-            for (j in 1..b.length) {
-                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
-                row[j] = minOf(row[j - 1] + 1, previous[j] + 1, previous[j - 1] + cost)
+        val d = Array(a.length + 1) { i -> IntArray(b.length + 1) { j -> if (i == 0) j else if (j == 0) i else 0 } }
+        for (i in 1..a.length) for (j in 1..b.length) {
+            val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+            d[i][j] = minOf(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+            if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1]) {
+                d[i][j] = minOf(d[i][j], d[i - 2][j - 2] + 1)
             }
-            previous = row
         }
-        return previous[b.length]
+        return d[a.length][b.length]
     }
 
     // ---- geometry ----
