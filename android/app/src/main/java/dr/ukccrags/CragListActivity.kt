@@ -874,12 +874,23 @@ class CragListActivity : AppCompatActivity() {
         val capped = asked.size > CLIMB_HITS
         val found = asked.take(CLIMB_HITS)
 
+        // Buttresses and boulders by name too: at a boulder field the block is
+        // often what is remembered, not the problem. Held to the crags the
+        // type and grade filter leaves, when one is set.
+        val blocks = if (ask.filter.isEmpty()) {
+            emptyList()
+        } else {
+            CragDb.searchButtresses(app, ask.filter, if (filtered) holding else null, BUTTRESS_HITS)
+        }
+
         val ticks = Ticks(app)
         val rows = mutableListOf<Row>()
 
+        // Labels only earn their space once more than one kind of hit is listed.
+        val labelled = listOf(crags, blocks, found).count { it.isNotEmpty() } > 1
+
         if (crags.isNotEmpty()) {
-            // Labels only earn their space once both kinds of hit are listed.
-            if (found.isNotEmpty()) {
+            if (labelled) {
                 rows += Row.Label(
                     app.resources.getQuantityString(R.plurals.crags_found, crags.size, crags.size)
                 )
@@ -887,6 +898,15 @@ class CragListActivity : AppCompatActivity() {
             crags.forEach { (crag, metres) ->
                 rows += Row.CragHit(crag, ask.ticked[crag.id] ?: 0, metres)
             }
+        }
+
+        if (blocks.isNotEmpty()) {
+            if (labelled) {
+                rows += Row.Label(
+                    app.resources.getQuantityString(R.plurals.buttresses, blocks.size, blocks.size)
+                )
+            }
+            blocks.forEach { rows += Row.ButtressRow(it) }
         }
 
         if (found.isNotEmpty()) {
@@ -936,6 +956,7 @@ class CragListActivity : AppCompatActivity() {
         data class Label(val text: String) : Row
         data class CragHit(val crag: CragCard, val ticked: Int, val metres: Float?) : Row
         data class ClimbRow(val hit: ClimbHit, val done: Boolean) : Row
+        data class ButtressRow(val hit: ButtressPin) : Row
     }
 
     private fun bindCrag(item: ItemCragBinding, row: Row.CragHit) {
@@ -1037,6 +1058,40 @@ class CragListActivity : AppCompatActivity() {
         item.root.setOnLongClickListener(null)
     }
 
+    /**
+     * A buttress opens its crag narrowed to it. One with no climbs is a pin
+     * from the reader's own map that matched nothing on UKC, so there is
+     * nothing to narrow to: it opens on the crag's map instead.
+     */
+    private fun bindButtress(item: ItemFoundBinding, row: Row.ButtressRow) {
+        val hit = row.hit
+
+        item.name.text = hit.name
+        item.name.alpha = 1f
+        item.grade.text = ""
+        item.meta.text = buildString {
+            append(hit.cragArea)
+            if (hit.climbCount > 0) {
+                append(" · ").append(resources.getQuantityString(R.plurals.climbs, hit.climbCount, hit.climbCount))
+            } else {
+                append(" · ").append(getString(R.string.buttress_map_only))
+            }
+        }
+
+        item.root.setOnClickListener {
+            if (hit.climbCount > 0) {
+                startActivity(
+                    CragActivity.intent(this, hit.cragId, hit.cragArea)
+                        .putExtra(CragActivity.EXTRA_FIND, hit.name)
+                )
+            } else {
+                startActivity(CragActivity.mapIntent(this, hit.cragId, hit.cragArea))
+            }
+        }
+
+        item.root.setOnLongClickListener(null)
+    }
+
     private inner class ResultAdapter : ListAdapter<Row, RecyclerView.ViewHolder>(RowDiff) {
 
         inner class LabelHolder(val item: ItemSectionBinding) :
@@ -1051,7 +1106,7 @@ class CragListActivity : AppCompatActivity() {
         override fun getItemViewType(position: Int): Int = when (getItem(position)) {
             is Row.Label -> TYPE_LABEL
             is Row.CragHit -> TYPE_CRAG
-            is Row.ClimbRow -> TYPE_CLIMB
+            is Row.ClimbRow, is Row.ButtressRow -> TYPE_CLIMB
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
@@ -1069,6 +1124,7 @@ class CragListActivity : AppCompatActivity() {
                 is Row.Label -> (holder as LabelHolder).item.label.text = row.text
                 is Row.CragHit -> bindCrag((holder as CragHolder).item, row)
                 is Row.ClimbRow -> bindClimb((holder as ClimbHolder).item, row)
+                is Row.ButtressRow -> bindButtress((holder as ClimbHolder).item, row)
             }
         }
     }
@@ -1078,6 +1134,7 @@ class CragListActivity : AppCompatActivity() {
         is Row.Label -> "label:" + row.text
         is Row.CragHit -> "crag:" + row.crag.id
         is Row.ClimbRow -> "climb:" + row.hit.url
+        is Row.ButtressRow -> "buttress:" + row.hit.cragId + ":" + row.hit.name
     }
 
     private object RowDiff : DiffUtil.ItemCallback<Row>() {
@@ -1085,6 +1142,8 @@ class CragListActivity : AppCompatActivity() {
             old is Row.Label && new is Row.Label -> true
             old is Row.CragHit && new is Row.CragHit -> old.crag.id == new.crag.id
             old is Row.ClimbRow && new is Row.ClimbRow -> old.hit.url == new.hit.url
+            old is Row.ButtressRow && new is Row.ButtressRow ->
+                old.hit.cragId == new.hit.cragId && old.hit.name == new.hit.name
             else -> false
         }
 
@@ -1097,6 +1156,9 @@ class CragListActivity : AppCompatActivity() {
 
         /** Most climb hits a search will list. Beyond this, refine the words. */
         const val CLIMB_HITS = 200
+
+        /** Buttress hits: fewer, since a name matching more than this is too vague to list. */
+        const val BUTTRESS_HITS = 50
 
         /** Long enough for the next letter of a word, short enough not to feel slow. */
         const val TYPING_PAUSE_MS = 150L

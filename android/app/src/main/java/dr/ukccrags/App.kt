@@ -111,7 +111,13 @@ class App : Application() {
         // process death the first screen back may be any of them, and most
         // read on the main thread, so the opening happens here, off it, before
         // any screen can ask.
-        Thread { runCatching { CragStore.open(this) } }.start()
+        OwnPins.init(this)
+        Thread {
+            runCatching { CragStore.open(this) }
+            // After the open: a build carrying different pins re-derives the
+            // crags they touch.
+            OwnPins.applyIfChanged(this)
+        }.start()
 
         // OpenStreetMap refuses requests without a real user agent, and the
         // tile cache belongs in the app's own storage rather than shared space.

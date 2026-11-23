@@ -705,6 +705,80 @@ object CragDb {
         }
     }
 
+    /** A crag's name and pin, for laying the reader's own map pins onto it. */
+    data class Place(val id: String, val area: String, val latitude: Double, val longitude: Double)
+
+    /** Crags with a pin inside a box. Bounds in the SQL for the reason given at [pinsWithin]. */
+    fun placesWithin(
+        context: Context,
+        south: Double,
+        north: Double,
+        west: Double,
+        east: Double,
+    ): List<Place> = db(context).rawQuery(
+        """
+        SELECT id, area, latitude, longitude FROM crags
+        WHERE latitude BETWEEN $south AND $north AND longitude BETWEEN $west AND $east
+        """.trimIndent(),
+        null,
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) {
+                add(Place(cursor.getString(0), cursor.getString(1), cursor.getDouble(2), cursor.getDouble(3)))
+            }
+        }
+    }
+
+    /**
+     * Buttresses by name, every word matched from the start of a word in it.
+     * A plain scan: there are a few tens of thousands, against climbs' hundreds
+     * of thousands, and a buttress search wants to find "heart" in "Tilted
+     * Heart Boulder" as readily as the first word.
+     */
+    fun searchButtresses(
+        context: Context,
+        query: String,
+        cragIds: Set<String>?,
+        limit: Int,
+    ): List<ButtressPin> {
+        val words = query.lowercase()
+            .split(Regex("[^\\p{L}\\p{N}]+"))
+            .filter { it.isNotBlank() }
+        if (words.isEmpty()) return emptyList()
+
+        val where = words.joinToString(" AND ") {
+            "(' ' || lower(b.name)) LIKE ? ESCAPE '\\'"
+        }
+        val args = words.map { "% " + likeEscape(it) + "%" }
+
+        return db(context).rawQuery(
+            """
+            SELECT b.crag_id, c.area, b.name, b.latitude, b.longitude, b.climb_count
+            FROM buttresses b JOIN crags c ON c.id = b.crag_id
+            WHERE b.name <> '' AND $where
+            ORDER BY b.climb_count DESC, b.name COLLATE NOCASE
+            """.trimIndent(),
+            args.toTypedArray(),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext() && size < limit) {
+                    val cragId = cursor.getString(0)
+                    if (cragIds != null && cragId !in cragIds) continue
+                    add(
+                        ButtressPin(
+                            cragId = cragId,
+                            cragArea = cursor.getString(1),
+                            name = cursor.getString(2),
+                            latitude = if (cursor.isNull(3)) null else cursor.getDouble(3),
+                            longitude = if (cursor.isNull(4)) null else cursor.getDouble(4),
+                            climbCount = cursor.getInt(5),
+                        )
+                    )
+                }
+            }
+        }
+    }
+
     /**
      * Parking inside a box, for the library map. Bounds go into the SQL for the
      * same reason as [pinsWithin]: bound as text, they would match nothing.

@@ -243,7 +243,14 @@ object CragStore {
         }
     }
 
-    private fun parse(root: JSONObject): Crag {
+    /**
+     * Every read of a crag file comes through here, so the reader's own map
+     * pins ([OwnPins]) are laid on at this one point and reach the index, the
+     * crag screen and the map alike — while the file stays as UKC sent it.
+     */
+    private fun parse(root: JSONObject): Crag = OwnPins.dress(parseUkc(root))
+
+    private fun parseUkc(root: JSONObject): Crag {
         val buttressArray = root.arrayFor("buttresses", "sectors")
 
         val buttresses = (0 until buttressArray.length()).map { index ->

@@ -76,6 +76,11 @@ automated check; anything user-visible needs a look on the phone.
     already seen are kept in a 600MB cache, refreshed monthly with signal;
     expired tiles still draw offline.
   - `RotateGesture` — two-finger rotation, gated so zoom always wins.
+  - `OwnPins` — boulder pins for the Bovey Woods crags, from a public
+    Google My Maps export (`assets/own_pins.kml`). Laid onto crags in `CragStore.parse`, so
+    files stay as UKC sent them. Folders match crags, pins match buttresses
+    fuzzily; leftovers become climb-less buttresses. Match report in the log
+    (`own pins:`).
   - `Pins.kt` — pin colour by dominant climb type, shared by map and legend.
   - `Data.kt` — `Climb`/`Buttress`/`Topo`/`Crag` and `CragStore`. One JSON file
     per crag under `files/crags/`; ticklists in `files/ticklists.json`; ticks,

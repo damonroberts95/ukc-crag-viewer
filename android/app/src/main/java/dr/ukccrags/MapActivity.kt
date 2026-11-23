@@ -1111,11 +1111,15 @@ class MapActivity : AppCompatActivity() {
         view.name.text = at.name.ifBlank { at.cragArea }
         view.detail.text = buildString {
             append(at.cragArea).append(" · ")
-            append(resources.getQuantityString(R.plurals.climbs, at.climbCount, at.climbCount))
+            // A pin from the reader's own map that UKC has no buttress for:
+            // no climbs to show, only the way there.
+            if (at.climbCount == 0) append(getString(R.string.buttress_map_only))
+            else append(resources.getQuantityString(R.plurals.climbs, at.climbCount, at.climbCount))
             if (pin.approximate) append(" · ").append(getString(R.string.pin_approximate))
         }
 
         view.open.text = getString(R.string.show_these_climbs)
+        view.open.visibility = if (at.climbCount == 0) View.GONE else View.VISIBLE
         view.open.setOnClickListener {
             sheet.dismiss()
             startActivity(
@@ -1223,13 +1227,15 @@ class MapActivity : AppCompatActivity() {
         view.detail.text = buildString {
             // On the library map the crag is not the screen's title, so say it.
             if (single == null) append(crag.area).append(" · ")
-            append(resources.getQuantityString(
+            if (buttress.climbs.isEmpty()) append(getString(R.string.buttress_map_only))
+            else append(resources.getQuantityString(
                 R.plurals.climbs, buttress.climbs.size, buttress.climbs.size,
             ))
             if (pin.approximate) append(" · ").append(getString(R.string.pin_approximate))
         }
 
         view.open.text = getString(R.string.show_these_climbs)
+        view.open.visibility = if (buttress.climbs.isEmpty()) View.GONE else View.VISIBLE
         view.open.setOnClickListener {
             sheet.dismiss()
             startActivity(
